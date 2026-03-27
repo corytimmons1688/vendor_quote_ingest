@@ -152,7 +152,8 @@ def extract_ross(text):
         result['estimate_number'] = est_match.group(1)
 
     # --- Quote date ---
-    date_match = re.search(r'Date\s+(\w+,\s+\w+\s+\d+,?\s*\d{4})', text, re.IGNORECASE)
+    # Format: "Date Fri, Apr 4, 2025" or "Date: Thu, Mar 20, 2025" or "Date Thu, Nov 14, 2024"
+    date_match = re.search(r'Date\s*:?\s*(\w{3},?\s+\w{3}\s+\d{1,2},?\s*\d{4})', text, re.IGNORECASE)
     if date_match:
         result['quote_date'] = date_match.group(1)
 
@@ -186,36 +187,68 @@ def extract_ross(text):
         result['finishing'] = finishing
 
     # --- Pricing table ---
-    # Ross format: "Quantity 250,000 500,000 ..." on one line
-    #              "Price Each $0.05155 $0.05019 ..." on next line
-    #              "Total $12,887.50 $25,095.00 ..." on next line
+    # Ross has TWO formats:
+    #
+    # Format 1 (old): All values on horizontal lines
+    #   "Quantity 5,000 10,000 25,000 ..."
+    #   "Price Each $0.50100 $0.34630 ..."
+    #   "Total $2,505.00 $3,463.00 ..."
+    #
+    # Format 2 (new): Vertical — header then one row per qty
+    #   "Quantity Each Total Grand Total"
+    #   "10,000 $0.65240 $6,524.00 $7,284.00"
+    #   "25,000 $0.52628 $13,157.00 $13,917.00"
     pricing = []
 
-    # Extract full lines for quantity, price, total, grand total
-    qty_match = re.search(r'Quantity\s+([\d,\s]+?)(?:\n|$)', text, re.IGNORECASE)
-    # Price Each may or may not have $ prefix — OCR sometimes drops it
-    price_match = re.search(r'Price\s+Each\s+\$?([\d.,\s$]+?)(?:\n|$)', text, re.IGNORECASE)
-    # Total line (not Grand Total)
-    total_match = re.search(r'(?:^|\n)\s*Total\s+\$?([\d.,\s$]+?)(?:\n|$)', text, re.IGNORECASE | re.MULTILINE)
-    grand_match = re.search(r'Grand\s+Total\s+\$?([\d.,\s$]+?)(?:\n|$)', text, re.IGNORECASE)
+    # Try Format 2 first (most common in recent quotes)
+    # Look for "Quantity Each Total Grand Total" header, then parse rows
+    fmt2_header = re.search(r'Quantity\s+Each\s+Total\s+Grand\s+Total', text, re.IGNORECASE)
+    if fmt2_header:
+        # Get lines after the header
+        after_header = text[fmt2_header.end():]
+        # Match rows: "10,000 $0.65240 $6,524.00 $7,284.00"
+        row_pattern = re.compile(
+            r'^\s*([\d,]+)\s+\$?([\d.]+)\s+\$?([\d,.]+)\s+\$?([\d,.]+)',
+            re.MULTILINE
+        )
+        for m in row_pattern.finditer(after_header):
+            # Stop if we hit non-data (e.g. "Non-Recurring", "Thank You")
+            if re.match(r'\s*[A-Z][a-z]', after_header[m.start():m.start()+20]):
+                # Check if it's actually a data line or text
+                pass
+            pricing.append({
+                'quantity': m.group(1).replace(',', ''),
+                'price_each': m.group(2),
+                'total': m.group(3),
+                'grand_total': m.group(4),
+            })
+            # Stop after a reasonable number or when format breaks
+            if len(pricing) > 10:
+                break
 
-    if qty_match and price_match:
-        quantities = re.findall(r'[\d,]+', qty_match.group(1))
-        # Prices have decimals — match numbers with dots
-        prices = re.findall(r'\d+\.\d+', price_match.group(1))
-        totals = re.findall(r'[\d,]+\.?\d*', total_match.group(1)) if total_match else []
-        grands = re.findall(r'[\d,]+\.?\d*', grand_match.group(1)) if grand_match else []
+    # Try Format 1 if Format 2 didn't find anything
+    if not pricing:
+        qty_match = re.search(r'Quantity\s+([\d,\s]+?)(?:\n|$)', text, re.IGNORECASE)
+        price_match = re.search(r'Price\s+Each\s+\$?([\d.,\s$]+?)(?:\n|$)', text, re.IGNORECASE)
+        total_match = re.search(r'(?:^|\n)\s*Total\s+\$?([\d.,\s$]+?)(?:\n|$)', text, re.IGNORECASE | re.MULTILINE)
+        grand_match = re.search(r'Grand\s+Total\s+\$?([\d.,\s$]+?)(?:\n|$)', text, re.IGNORECASE)
 
-        for i in range(min(len(quantities), len(prices))):
-            entry = {
-                'quantity': quantities[i].replace(',', ''),
-                'price_each': prices[i],
-            }
-            if i < len(totals):
-                entry['total'] = totals[i]
-            if i < len(grands):
-                entry['grand_total'] = grands[i]
-            pricing.append(entry)
+        if qty_match and price_match:
+            quantities = re.findall(r'[\d,]+', qty_match.group(1))
+            prices = re.findall(r'\d+\.\d+', price_match.group(1))
+            totals = re.findall(r'[\d,]+\.?\d*', total_match.group(1)) if total_match else []
+            grands = re.findall(r'[\d,]+\.?\d*', grand_match.group(1)) if grand_match else []
+
+            for i in range(min(len(quantities), len(prices))):
+                entry = {
+                    'quantity': quantities[i].replace(',', ''),
+                    'price_each': prices[i],
+                }
+                if i < len(totals):
+                    entry['total'] = totals[i]
+                if i < len(grands):
+                    entry['grand_total'] = grands[i]
+                pricing.append(entry)
 
     if pricing:
         result['pricing_json'] = json.dumps(pricing)
