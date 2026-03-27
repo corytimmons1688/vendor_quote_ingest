@@ -17,6 +17,8 @@ from pdf2image import convert_from_path
 from bs4 import BeautifulSoup
 import openpyxl
 
+from vendor_extractors import extract_for_vendor
+
 
 def get_tesseract_version():
     """Get the installed Tesseract version string."""
@@ -150,6 +152,78 @@ def process_excel(filepath):
     return results
 
 
+def process_json_specs(filepath):
+    """Pass through structured specification JSON files from the Apps Script."""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    specs = data.get('specifications', {})
+    if not specs:
+        return None
+
+    fields = []
+    for i, (key, value) in enumerate(specs.items(), start=1):
+        fields.append({
+            'line_num': i,
+            'text': f'{key}: {value}',
+            'confidence': 1.0,
+            'word_count': len(value.split())
+        })
+
+    raw_text = '\n'.join(f'{k}: {v}' for k, v in specs.items())
+    return [{
+        'page': 1,
+        'raw_text': raw_text,
+        'fields': fields,
+        'spec_type': data.get('specType'),  # 'requested' or None
+        'specifications': specs,
+        'metadata': {
+            'email_date': data.get('emailDate'),
+            'email_subject': data.get('emailSubject'),
+            'email_from': data.get('emailFrom'),
+        }
+    }]
+
+
+# Known spec field names and their normalized column suffixes
+SPEC_FIELD_MAP = {
+    'bag': 'bag',
+    'size': 'size',
+    'substrate': 'substrate',
+    'finish': 'finish',
+    'material': 'material',
+    'embellishment': 'embellishment',
+    'fill style': 'fill_style',
+    'seal type': 'seal_type',
+    'gusset style': 'gusset_style',
+    'gusset details': 'gusset_details',
+    'zipper': 'zipper',
+    'tear notch': 'tear_notch',
+    'hole punch': 'hole_punch',
+    'corners': 'corners',
+    'printing method': 'printing_method',
+    'quantities': 'quantities',
+}
+
+
+def extract_returned_specs(fields):
+    """Scan OCR field lines for known spec field names and return matched values."""
+    specs = {}
+    for field in fields:
+        text = field.get('text', '')
+        # Try to match "Key: Value" pattern against known spec fields
+        for spec_name, col_suffix in SPEC_FIELD_MAP.items():
+            if text.lower().startswith(spec_name):
+                # Check for colon separator
+                idx = text.find(':')
+                if idx > 0 and idx < len(text) - 1:
+                    value = text[idx + 1:].strip()
+                    if value:
+                        specs[col_suffix] = value
+                        break
+    return specs
+
+
 def process_file(filepath):
     """Route file to appropriate processor based on extension."""
     ext = Path(filepath).suffix.lower()
@@ -161,6 +235,7 @@ def process_file(filepath):
         '.tiff': process_image,
         '.tif': process_image,
         '.html': process_html,
+        '.json': process_json_specs,
         '.xlsx': process_excel,
         '.xls': process_excel,
     }
@@ -199,6 +274,31 @@ def main():
             if pages is None:
                 continue
 
+            # Check for spec_type from JSON specs files
+            spec_type = None
+            specifications = None
+            returned_specs = None
+            for page_data in pages:
+                if page_data.get('spec_type'):
+                    spec_type = page_data['spec_type']
+                    specifications = page_data.get('specifications')
+                    break
+
+            # For OCR'd PDFs, attempt to extract returned specs from field lines
+            ext = filepath.suffix.lower()
+            if ext == '.pdf' and not spec_type:
+                all_fields = []
+                for page_data in pages:
+                    all_fields.extend(page_data.get('fields', []))
+                returned_specs = extract_returned_specs(all_fields) or None
+
+            # --- Vendor-specific structured extraction ---
+            # Combine all page text for vendor extractors
+            all_text = '\n'.join(p.get('raw_text', '') for p in pages)
+            vendor_extracted = {}
+            if all_text.strip() and not spec_type:
+                vendor_extracted = extract_for_vendor(args.vendor, all_text)
+
             output = {
                 'vendor': args.vendor,
                 'source_file': filepath.name,
@@ -208,6 +308,15 @@ def main():
                 'ocr_version': tesseract_version,
                 'pages': pages
             }
+
+            if spec_type:
+                output['spec_type'] = spec_type
+            if specifications:
+                output['specifications'] = specifications
+            if returned_specs:
+                output['returned_specs'] = returned_specs
+            if vendor_extracted:
+                output['vendor_extracted'] = vendor_extracted
 
             output_path = Path(args.output_dir) / f"{filepath.stem}.json"
             with open(output_path, 'w') as f:
