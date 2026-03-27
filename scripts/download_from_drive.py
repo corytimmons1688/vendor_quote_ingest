@@ -1,6 +1,7 @@
 """
 Downloads new vendor quote files from Google Drive.
 Tracks previously processed files via a lookback window.
+Supports Shared Drives (supportsAllDrives).
 """
 
 import argparse
@@ -30,23 +31,32 @@ def get_drive_service():
 
 def find_vendor_folder(service, root_folder_id, vendor_name):
     """Find the vendor-specific subfolder in the Drive root."""
-    # Debug: list ALL children of the root folder to see what the service account can access
-    debug_query = f"'{root_folder_id}' in parents and trashed = false"
-    debug_results = service.files().list(q=debug_query, fields='files(id, name, mimeType)').execute()
-    debug_files = debug_results.get('files', [])
-    print(f"DEBUG: Root folder {root_folder_id} contains {len(debug_files)} items:")
-    for f in debug_files:
-        print(f"  - {f['name']} ({f['mimeType']}) id={f['id']}")
-
     query = (
         f"'{root_folder_id}' in parents "
         f"and name = '{vendor_name}' "
         f"and mimeType = 'application/vnd.google-apps.folder' "
         f"and trashed = false"
     )
-    results = service.files().list(q=query, fields='files(id, name)').execute()
+    results = service.files().list(
+        q=query,
+        fields='files(id, name)',
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
     files = results.get('files', [])
     if not files:
+        # Debug: list what the service account can see
+        debug_query = f"'{root_folder_id}' in parents and trashed = false"
+        debug_results = service.files().list(
+            q=debug_query,
+            fields='files(id, name, mimeType)',
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        debug_files = debug_results.get('files', [])
+        print(f"DEBUG: Root folder contains {len(debug_files)} items:")
+        for f in debug_files:
+            print(f"  - {f['name']} ({f['mimeType']}) id={f['id']}")
         raise FileNotFoundError(f"Vendor folder '{vendor_name}' not found in Drive")
     return files[0]['id']
 
@@ -63,7 +73,9 @@ def list_new_files(service, folder_id, lookback_hours=26):
         q=query,
         fields='files(id, name, mimeType, size, createdTime)',
         orderBy='createdTime desc',
-        pageSize=100
+        pageSize=100,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
     return results.get('files', [])
 
@@ -73,7 +85,7 @@ def download_file(service, file_id, file_name, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, file_name)
 
-    request = service.files().get_media(fileId=file_id)
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     with io.FileIO(filepath, 'wb') as fh:
         downloader = MediaIoBaseDownload(fh, request)
         done = False
