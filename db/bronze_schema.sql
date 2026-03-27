@@ -2,6 +2,7 @@
 -- Neon Postgres — Bronze Layer Vendor Quote Tables
 -- Target: dev-estimates branch ONLY
 -- All names lowercase per PostgreSQL convention
+-- One row per source file (flat file style)
 -- ============================================================
 
 -- -------------------------------------------------------
@@ -15,19 +16,15 @@ CREATE TABLE IF NOT EXISTS est_bnz_tedpack (
     email_subject       TEXT,
     email_from          TEXT,
 
-    -- Raw OCR / parsed fields (all TEXT to preserve original data)
+    -- Raw OCR text (full document, all pages combined)
     raw_ocr_text        TEXT,
-    field_key           TEXT,
-    field_value         TEXT,
-    field_line_num      INTEGER,
-    field_confidence    NUMERIC(5,4),
 
     -- Metadata
     file_type           TEXT,
     file_size_bytes     BIGINT,
     ocr_engine          TEXT            DEFAULT 'tesseract',
     ocr_version         TEXT,
-    page_number         INTEGER,
+    page_count          INTEGER,
     ingested_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     processing_run      TEXT,
     status              TEXT            DEFAULT 'raw',
@@ -81,18 +78,15 @@ CREATE TABLE IF NOT EXISTS est_bnz_ross (
     returned_spec_printing_method   TEXT,
     returned_spec_quantities        TEXT,
 
-    -- Raw OCR / parsed fields (all TEXT to preserve original data)
+    -- Raw OCR text (full document, all pages combined)
     raw_ocr_text        TEXT,
-    field_key           TEXT,
-    field_value         TEXT,
-    field_line_num      INTEGER,
-    field_confidence    NUMERIC(5,4),
 
+    -- Metadata
     file_type           TEXT,
     file_size_bytes     BIGINT,
     ocr_engine          TEXT            DEFAULT 'tesseract',
     ocr_version         TEXT,
-    page_number         INTEGER,
+    page_count          INTEGER,
     ingested_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     processing_run      TEXT,
     status              TEXT            DEFAULT 'raw',
@@ -146,18 +140,15 @@ CREATE TABLE IF NOT EXISTS est_bnz_dazpak (
     returned_spec_printing_method   TEXT,
     returned_spec_quantities        TEXT,
 
-    -- Raw OCR / parsed fields (all TEXT to preserve original data)
+    -- Raw OCR text (full document, all pages combined)
     raw_ocr_text        TEXT,
-    field_key           TEXT,
-    field_value         TEXT,
-    field_line_num      INTEGER,
-    field_confidence    NUMERIC(5,4),
 
+    -- Metadata
     file_type           TEXT,
     file_size_bytes     BIGINT,
     ocr_engine          TEXT            DEFAULT 'tesseract',
     ocr_version         TEXT,
-    page_number         INTEGER,
+    page_count          INTEGER,
     ingested_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     processing_run      TEXT,
     status              TEXT            DEFAULT 'raw',

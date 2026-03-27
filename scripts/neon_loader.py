@@ -162,59 +162,39 @@ def load_file(conn, table_name, data, run_id):
     vendor_cols = VENDOR_EXTRACTED_COLUMNS.get(vendor, [])
     vendor_values = tuple(vendor_extracted.get(col) for col in vendor_cols)
 
+    # Combine all page text into one raw_ocr_text blob
+    raw_ocr_text = '\n\n--- Page Break ---\n\n'.join(
+        p.get('raw_text', '') for p in data['pages']
+    )
+
+    base = (
+        data['source_file'],
+        vendor,
+        file_meta['email_date'],
+        file_meta['email_subject'],
+        None,  # email_from
+    )
+
+    ocr_fields = (
+        raw_ocr_text,
+    )
+
+    metadata = (
+        data['file_type'],
+        data['file_size_bytes'],
+        data['ocr_engine'],
+        data['ocr_version'],
+        len(data['pages']),  # page_count
+        run_id,
+        'raw',
+        None  # error_message
+    )
+
     rows = []
-    for page_data in data['pages']:
-        # Build base row tuple
-        base = (
-            data['source_file'],
-            vendor,
-            file_meta['email_date'],
-            file_meta['email_subject'],
-            None,  # email_from
-        )
-
-        # Row 1: Full raw OCR text for this page (field_key = NULL)
-        ocr_fields = (
-            page_data['raw_text'],
-            None,  # field_key
-            None,  # field_value
-            None,  # field_line_num
-            None,  # field_confidence
-        )
-
-        metadata = (
-            data['file_type'],
-            data['file_size_bytes'],
-            data['ocr_engine'],
-            data['ocr_version'],
-            page_data.get('page', 1),
-            run_id,
-            'raw',
-            None  # error_message
-        )
-
-        if has_spec_columns:
-            rows.append(base + requested_specs + returned_specs + ocr_fields + metadata + vendor_values)
-        else:
-            rows.append(base + ocr_fields + metadata + vendor_values)
-
-        # Row per extracted field line
-        for field in page_data.get('fields', []):
-            text = field['text']
-            key, value = split_key_value(text)
-
-            field_values = (
-                None,  # raw_ocr_text (only on full-text row)
-                key,
-                value,
-                field['line_num'],
-                field.get('confidence'),
-            )
-
-            if has_spec_columns:
-                rows.append(base + requested_specs + returned_specs + field_values + metadata + vendor_values)
-            else:
-                rows.append(base + field_values + metadata + vendor_values)
+    if has_spec_columns:
+        rows.append(base + requested_specs + returned_specs + ocr_fields + metadata + vendor_values)
+    else:
+        rows.append(base + ocr_fields + metadata + vendor_values)
 
     # Build INSERT SQL
     vendor_col_names = ', '.join(vendor_cols) if vendor_cols else ''
@@ -228,8 +208,8 @@ def load_file(conn, table_name, data, run_id):
                 source_file, source_vendor, email_date, email_subject, email_from,
                 {requested_cols},
                 {returned_cols},
-                raw_ocr_text, field_key, field_value, field_line_num, field_confidence,
-                file_type, file_size_bytes, ocr_engine, ocr_version, page_number,
+                raw_ocr_text,
+                file_type, file_size_bytes, ocr_engine, ocr_version, page_count,
                 processing_run, status, error_message
                 {vendor_col_sql}
             ) VALUES %s
@@ -238,8 +218,8 @@ def load_file(conn, table_name, data, run_id):
         insert_sql = f"""
             INSERT INTO {table_name} (
                 source_file, source_vendor, email_date, email_subject, email_from,
-                raw_ocr_text, field_key, field_value, field_line_num, field_confidence,
-                file_type, file_size_bytes, ocr_engine, ocr_version, page_number,
+                raw_ocr_text,
+                file_type, file_size_bytes, ocr_engine, ocr_version, page_count,
                 processing_run, status, error_message
                 {vendor_col_sql}
             ) VALUES %s
@@ -250,20 +230,6 @@ def load_file(conn, table_name, data, run_id):
 
     return len(rows)
 
-
-def split_key_value(text):
-    """
-    Attempt to split 'Key: Value' or 'Key\\tValue' patterns.
-    Returns (key, value) if a pattern is found, else (text, text).
-    Bronze layer: store both representations — don't lose data.
-    """
-    for delimiter in [':\t', ': ', ':\t\t', '\t']:
-        if delimiter in text:
-            parts = text.split(delimiter, 1)
-            if len(parts) == 2 and parts[0].strip() and parts[1].strip():
-                return parts[0].strip(), parts[1].strip()
-
-    return text, text
 
 
 def log_ingestion(conn, run_id, vendor, files_processed, rows_inserted, errors, error_details):
