@@ -30,6 +30,14 @@ def get_drive_service():
 
 def find_vendor_folder(service, root_folder_id, vendor_name):
     """Find the vendor-specific subfolder in the Drive root."""
+    # Debug: list ALL children of the root folder to see what the service account can access
+    debug_query = f"'{root_folder_id}' in parents and trashed = false"
+    debug_results = service.files().list(q=debug_query, fields='files(id, name, mimeType)').execute()
+    debug_files = debug_results.get('files', [])
+    print(f"DEBUG: Root folder {root_folder_id} contains {len(debug_files)} items:")
+    for f in debug_files:
+        print(f"  - {f['name']} ({f['mimeType']}) id={f['id']}")
+
     query = (
         f"'{root_folder_id}' in parents "
         f"and name = '{vendor_name}' "
