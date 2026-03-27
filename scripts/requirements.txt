@@ -1,0 +1,8 @@
+google-api-python-client==2.127.0
+google-auth==2.29.0
+pytesseract==0.3.13
+Pillow==10.3.0
+pdf2image==1.17.0
+beautifulsoup4==4.12.3
+openpyxl==3.1.2
+psycopg2-binary==2.9.9

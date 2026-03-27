@@ -1,0 +1,22 @@
+{
+  "vendors": {
+    "Tedpack": {
+      "drive_folder_name": "Tedpack",
+      "db_table": "est_bnz_tedpack",
+      "email_domains": ["tedpack.com"],
+      "expected_file_types": ["pdf", "xlsx"]
+    },
+    "Ross": {
+      "drive_folder_name": "Ross",
+      "db_table": "est_bnz_ross",
+      "email_domains": ["rossprint.com"],
+      "expected_file_types": ["pdf"]
+    },
+    "Dazpak": {
+      "drive_folder_name": "Dazpak",
+      "db_table": "est_bnz_dazpak",
+      "email_domains": ["dazpak.com"],
+      "expected_file_types": ["pdf", "html"]
+    }
+  }
+}

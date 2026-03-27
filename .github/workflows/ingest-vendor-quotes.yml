@@ -1,0 +1,70 @@
+name: Vendor Quote OCR Ingestion
+
+on:
+  schedule:
+    - cron: '0 15 * * *'  # 3 PM UTC = 8 AM MST (after AppScript runs at 6 AM MST)
+  workflow_dispatch:
+
+env:
+  NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+  GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+  DRIVE_ROOT_FOLDER_ID: ${{ secrets.DRIVE_ROOT_FOLDER_ID }}
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        vendor: [Tedpack, Ross, Dazpak]
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies (Tesseract OCR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+
+      - name: Install Python dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Download new files from Google Drive
+        id: download
+        run: |
+          python scripts/download_from_drive.py \
+            --vendor "${{ matrix.vendor }}" \
+            --output-dir "./downloads/${{ matrix.vendor }}"
+
+      - name: Run OCR processing
+        if: steps.download.outputs.file_count != '0'
+        id: ocr
+        run: |
+          python scripts/ocr_processor.py \
+            --vendor "${{ matrix.vendor }}" \
+            --input-dir "./downloads/${{ matrix.vendor }}" \
+            --output-dir "./parsed/${{ matrix.vendor }}"
+
+      - name: Load into Neon Database
+        if: steps.download.outputs.file_count != '0'
+        run: |
+          python scripts/neon_loader.py \
+            --vendor "${{ matrix.vendor }}" \
+            --input-dir "./parsed/${{ matrix.vendor }}" \
+            --run-id "${{ github.run_id }}"
+
+      - name: Upload processing artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: processing-log-${{ matrix.vendor }}
+          path: ./parsed/${{ matrix.vendor }}/*.json
+          retention-days: 30
