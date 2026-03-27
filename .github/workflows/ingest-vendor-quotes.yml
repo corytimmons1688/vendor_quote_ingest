@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 15 * * *'  # 3 PM UTC = 8 AM MST (after AppScript runs at 6 AM MST)
   workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: 'Hours to look back for files (0 = all files)'
+        required: false
+        default: '26'
+      vendor:
+        description: 'Single vendor to process (blank = all)'
+        required: false
+        default: ''
 
 env:
   NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
@@ -21,31 +30,49 @@ jobs:
       fail-fast: false
 
     steps:
+      - name: Check vendor filter
+        id: filter
+        run: |
+          INPUT_VENDOR="${{ github.event.inputs.vendor }}"
+          MATRIX_VENDOR="${{ matrix.vendor }}"
+          if [ -z "$INPUT_VENDOR" ] || [ "$INPUT_VENDOR" = "$MATRIX_VENDOR" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping $MATRIX_VENDOR (filter: $INPUT_VENDOR)"
+          fi
+
       - name: Checkout repository
+        if: steps.filter.outputs.skip != 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python 3.11
+        if: steps.filter.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install system dependencies (Tesseract OCR)
+        if: steps.filter.outputs.skip != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
 
       - name: Install Python dependencies
+        if: steps.filter.outputs.skip != 'true'
         run: pip install -r scripts/requirements.txt
 
       - name: Download new files from Google Drive
+        if: steps.filter.outputs.skip != 'true'
         id: download
         run: |
           python scripts/download_from_drive.py \
             --vendor "${{ matrix.vendor }}" \
-            --output-dir "./downloads/${{ matrix.vendor }}"
+            --output-dir "./downloads/${{ matrix.vendor }}" \
+            --lookback-hours "${{ github.event.inputs.lookback_hours || '26' }}"
 
       - name: Run OCR processing
-        if: steps.download.outputs.file_count != '0'
+        if: steps.filter.outputs.skip != 'true' && steps.download.outputs.file_count != '0'
         id: ocr
         run: |
           python scripts/ocr_processor.py \
@@ -54,15 +81,20 @@ jobs:
             --output-dir "./parsed/${{ matrix.vendor }}"
 
       - name: Load into Neon Database
-        if: steps.download.outputs.file_count != '0'
+        if: steps.filter.outputs.skip != 'true' && steps.download.outputs.file_count != '0'
         run: |
+          TRUNCATE_FLAG=""
+          if [ "${{ github.event.inputs.lookback_hours }}" = "0" ]; then
+            TRUNCATE_FLAG="--truncate"
+          fi
           python scripts/neon_loader.py \
             --vendor "${{ matrix.vendor }}" \
             --input-dir "./parsed/${{ matrix.vendor }}" \
-            --run-id "${{ github.run_id }}"
+            --run-id "${{ github.run_id }}" \
+            $TRUNCATE_FLAG
 
       - name: Upload processing artifacts
-        if: always()
+        if: always() && steps.filter.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: processing-log-${{ matrix.vendor }}

@@ -8,7 +8,6 @@
 -- est_bnz_tedpack
 -- -------------------------------------------------------
 CREATE TABLE IF NOT EXISTS est_bnz_tedpack (
-    est_bnz_tedpack_pk  BIGSERIAL       PRIMARY KEY,
     ingestion_id        UUID            NOT NULL DEFAULT gen_random_uuid(),
     source_file         TEXT            NOT NULL,
     source_vendor       TEXT            NOT NULL DEFAULT 'Tedpack',
@@ -39,7 +38,6 @@ CREATE TABLE IF NOT EXISTS est_bnz_tedpack (
 -- est_bnz_ross
 -- -------------------------------------------------------
 CREATE TABLE IF NOT EXISTS est_bnz_ross (
-    est_bnz_ross_pk     BIGSERIAL       PRIMARY KEY,
     ingestion_id        UUID            NOT NULL DEFAULT gen_random_uuid(),
     source_file         TEXT            NOT NULL,
     source_vendor       TEXT            NOT NULL DEFAULT 'Ross',
@@ -105,7 +103,6 @@ CREATE TABLE IF NOT EXISTS est_bnz_ross (
 -- est_bnz_dazpak
 -- -------------------------------------------------------
 CREATE TABLE IF NOT EXISTS est_bnz_dazpak (
-    est_bnz_dazpak_pk   BIGSERIAL       PRIMARY KEY,
     ingestion_id        UUID            NOT NULL DEFAULT gen_random_uuid(),
     source_file         TEXT            NOT NULL,
     source_vendor       TEXT            NOT NULL DEFAULT 'Dazpak',

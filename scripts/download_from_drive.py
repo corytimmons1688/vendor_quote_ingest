@@ -62,22 +62,36 @@ def find_vendor_folder(service, root_folder_id, vendor_name):
 
 
 def list_new_files(service, folder_id, lookback_hours=26):
-    """List files created in the last N hours (slightly over 24h for overlap safety)."""
-    cutoff = (datetime.utcnow() - timedelta(hours=lookback_hours)).isoformat() + 'Z'
-    query = (
-        f"'{folder_id}' in parents "
-        f"and createdTime > '{cutoff}' "
-        f"and trashed = false"
-    )
-    results = service.files().list(
-        q=query,
-        fields='files(id, name, mimeType, size, createdTime)',
-        orderBy='createdTime desc',
-        pageSize=100,
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-    ).execute()
-    return results.get('files', [])
+    """List files created in the last N hours. Use 0 for all files."""
+    if lookback_hours > 0:
+        cutoff = (datetime.utcnow() - timedelta(hours=lookback_hours)).isoformat() + 'Z'
+        query = (
+            f"'{folder_id}' in parents "
+            f"and createdTime > '{cutoff}' "
+            f"and trashed = false"
+        )
+    else:
+        query = (
+            f"'{folder_id}' in parents "
+            f"and trashed = false"
+        )
+    all_files = []
+    page_token = None
+    while True:
+        results = service.files().list(
+            q=query,
+            fields='nextPageToken, files(id, name, mimeType, size, createdTime)',
+            orderBy='createdTime desc',
+            pageSize=100,
+            pageToken=page_token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        all_files.extend(results.get('files', []))
+        page_token = results.get('nextPageToken')
+        if not page_token:
+            break
+    return all_files
 
 
 def download_file(service, file_id, file_name, output_dir):
@@ -99,13 +113,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--vendor', required=True)
     parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--lookback-hours', type=int, default=26,
+                        help='Hours to look back for new files. Use 0 for all files.')
     args = parser.parse_args()
 
     root_folder_id = os.environ['DRIVE_ROOT_FOLDER_ID']
     service = get_drive_service()
 
     vendor_folder_id = find_vendor_folder(service, root_folder_id, args.vendor)
-    new_files = list_new_files(service, vendor_folder_id)
+    new_files = list_new_files(service, vendor_folder_id, lookback_hours=args.lookback_hours)
 
     print(f"Found {len(new_files)} new files for {args.vendor}")
 

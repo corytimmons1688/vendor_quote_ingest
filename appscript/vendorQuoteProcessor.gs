@@ -26,6 +26,7 @@ const CONFIG = {
       folderId: null,
       quoteInBody: false,
       domains: ['dazpak.com'],
+      repliesInNewThread: true,
     },
   },
   rootFolderId: '1ZMKXumVzO_CCl4pNY0iWPximitOEC9Vr',
@@ -252,9 +253,48 @@ function backfillHistorical() {
   }
 }
 
+// --- Cross-Thread Outbound Lookup (Dazpak) -----------------------------------
+// When a vendor replies in a new thread, find the original outbound request
+// by extracting the FL- identifier from the subject and searching Gmail.
+function extractFlId_(subject) {
+  const match = subject.match(/(FL-(?:DL|CQ)-\d{3,})/i);
+  return match ? match[1] : null;
+}
+
+function findOutboundSpecsForSubject_(subject, vendorDomains) {
+  const flId = extractFlId_(subject);
+  if (!flId) return {};
+
+  // Search for outbound threads containing this FL- ID
+  const query = `subject:"${flId}" -from:@${vendorDomains[0]}`;
+  const threads = GmailApp.search(query, 0, 5);
+
+  for (const thread of threads) {
+    const messages = thread.getMessages();
+    for (const msg of messages) {
+      // Skip vendor messages — we want the outbound request
+      if (isFromVendor_(msg, vendorDomains)) continue;
+
+      const body = msg.getPlainBody();
+      if (!body) continue;
+
+      let specs = extractSpecifications_(body);
+      if (Object.keys(specs).length < 3) {
+        specs = extractSpecsLoose_(body);
+      }
+      if (Object.keys(specs).length >= 2) {
+        return specs;
+      }
+    }
+  }
+
+  return {};
+}
+
 // --- Thread-Level Processing (Ross/Dazpak) -----------------------------------
 // Only saves files when the vendor has responded with a PDF attachment.
-// Extracts requested specs from Dan's outbound message in the same thread.
+// Extracts requested specs from Dan's outbound message in the same thread,
+// or from a linked outbound thread when the vendor replies in a new thread.
 function processThread_(thread, vendorFolder, vendor, dateStr) {
   const result = { filesCreated: 0, logEntries: [], shouldLabel: false };
   const messages = thread.getMessages();
@@ -292,6 +332,13 @@ function processThread_(thread, vendorFolder, vendor, dateStr) {
       requestedSpecs = specs;
       break;
     }
+  }
+
+  // Cross-thread lookup: if vendor replies in a new thread, the outbound
+  // request lives in a separate Gmail thread. Search by FL- ID to find it.
+  if (Object.keys(requestedSpecs).length === 0 && vendor.repliesInNewThread && vendorMessages.length > 0) {
+    const subject = vendorMessages[0].getSubject();
+    requestedSpecs = findOutboundSpecsForSubject_(subject, vendor.domains);
   }
 
   // Save requested specs JSON if we found any
@@ -826,4 +873,166 @@ function resetProcessedLabels() {
   }
 
   Logger.log(`Time limit reached. Removed label from ${total} threads. Run again to continue.`);
+}
+
+// --- Backfill missing sidecar JSON files for already-processed Ross/Dazpak threads ---
+// Searches ALREADY PROCESSED threads (with the label) for outbound messages
+// containing specs, and creates sidecar JSON files where they don't already exist.
+// Run repeatedly until it logs "Done".
+function backfillMissingSidecars() {
+  const startTime = Date.now();
+  const maxMs = 5 * 60 * 1000;
+  const rootFolder = DriveApp.getFolderById(CONFIG.rootFolderId);
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  let created = 0;
+  let skipped = 0;
+  let checked = 0;
+
+  // Only process Ross and Dazpak (attachment-based vendors)
+  const vendors = ['ross', 'dazpak'];
+
+  for (const vendorKey of vendors) {
+    if ((Date.now() - startTime) >= maxMs) break;
+
+    const vendor = CONFIG.vendors[vendorKey];
+    const vendorFolder = getOrCreateFolder_(rootFolder, vendor.name);
+    const vendorName = vendor.name;
+
+    // Search for PROCESSED threads (that already have the label)
+    const query = `${vendor.searchQuery} label:${CONFIG.processedLabel}`;
+    const threads = GmailApp.search(query, 0, 50);
+    Logger.log(`${vendorName}: checking ${threads.length} processed threads for missing sidecars`);
+
+    for (const thread of threads) {
+      if ((Date.now() - startTime) >= maxMs) break;
+      checked++;
+
+      const messages = thread.getMessages();
+
+      // Find the first vendor message to use for filename prefix
+      let firstVendorMsg = null;
+      const outboundMessages = [];
+      for (const message of messages) {
+        if (isFromVendor_(message, vendor.domains)) {
+          if (!firstVendorMsg) firstVendorMsg = message;
+        } else {
+          outboundMessages.push(message);
+        }
+      }
+
+      if (!firstVendorMsg) continue;
+
+      // Check if a sidecar already exists for this thread
+      const messageDate = Utilities.formatDate(
+        firstVendorMsg.getDate(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HHmmss'
+      );
+      const sanitizedSubject = sanitizeFilename_(firstVendorMsg.getSubject());
+      const specsFilename = `${messageDate}_${vendorName}_${sanitizedSubject}_requested_specs.json`;
+
+      if (fileExistsInFolder_(vendorFolder, specsFilename)) {
+        skipped++;
+        continue;
+      }
+
+      // Try to extract specs from outbound messages
+      let requestedSpecs = {};
+      for (const msg of outboundMessages) {
+        const body = msg.getPlainBody();
+        if (!body) continue;
+
+        // Try standard spec extraction
+        let specs = extractSpecifications_(body);
+
+        // If standard extraction found very few fields, try looser parsing
+        if (Object.keys(specs).length < 3) {
+          specs = extractSpecsLoose_(body);
+        }
+
+        if (Object.keys(specs).length >= 2) {
+          requestedSpecs = specs;
+          break;
+        }
+      }
+
+      // Cross-thread lookup for vendors that reply in new threads
+      if (Object.keys(requestedSpecs).length < 2 && vendor.repliesInNewThread) {
+        const subject = firstVendorMsg.getSubject();
+        requestedSpecs = findOutboundSpecsForSubject_(subject, vendor.domains);
+      }
+
+      if (Object.keys(requestedSpecs).length < 2) continue;
+
+      // Create the sidecar JSON
+      try {
+        const specsPayload = {
+          vendor: vendorName,
+          specType: 'requested',
+          messageId: firstVendorMsg.getId(),
+          emailDate: firstVendorMsg.getDate().toISOString(),
+          emailSubject: firstVendorMsg.getSubject(),
+          emailFrom: firstVendorMsg.getFrom(),
+          extractedAt: new Date().toISOString(),
+          specifications: requestedSpecs,
+        };
+        const specsBlob = Utilities.newBlob(
+          JSON.stringify(specsPayload, null, 2),
+          'application/json',
+          specsFilename
+        );
+        vendorFolder.createFile(specsBlob);
+        created++;
+        Logger.log(`Created sidecar: ${specsFilename}`);
+      } catch (e) {
+        Logger.log(`ERROR creating sidecar ${specsFilename}: ${e.message}`);
+      }
+    }
+  }
+
+  Logger.log(`Done. Checked ${checked} threads, created ${created} sidecars, skipped ${skipped} (already exist).`);
+}
+
+// --- Loose spec extraction for older email formats ---
+// Matches "Field: Value" or "Field - Value" anywhere in a line (not just at start)
+// Also matches "W x H" size patterns and common spec indicators
+function extractSpecsLoose_(plainBody) {
+  if (!plainBody) return {};
+  const specs = {};
+  const lines = plainBody.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.length > 200) continue;
+
+    // Size pattern: "4.7 x 7.7" or "5W x 6H x 2G" or "4.7W X 7.7H X 0G"
+    if (!specs['Size']) {
+      const sizeMatch = trimmed.match(/(\d+\.?\d*)\s*[Ww]?\s*[Xx×]\s*(\d+\.?\d*)\s*[Hh]?\s*(?:[Xx×]\s*(\d+\.?\d*)\s*[Gg]?)?/);
+      if (sizeMatch && !trimmed.toLowerCase().includes('image') && !trimmed.toLowerCase().includes('pixel')) {
+        specs['Size'] = sizeMatch[0].trim();
+      }
+    }
+
+    // Standard field: value patterns (more lenient — anywhere in line)
+    for (const field of SPEC_FIELDS) {
+      if (specs[field]) continue;
+      const regex = new RegExp(`${escapeRegex_(field)}\\s*[:\\-–—]\\s*(.{2,80})`, 'i');
+      const match = trimmed.match(regex);
+      if (match) {
+        const value = match[1].trim();
+        // Filter out junk
+        if (value && !value.startsWith('http') && value.length < 100) {
+          specs[field] = value;
+        }
+      }
+    }
+
+    // Bag/Quote ID pattern: "FL-DL-XXXX" or "FL-CQ-XXXX" or "CQ-XXXX"
+    if (!specs['Bag']) {
+      const bagMatch = trimmed.match(/((?:FL-)?(?:DL|CQ)-\d{3,}(?:\s*[-–]\s*.+)?)/i);
+      if (bagMatch && trimmed.length < 150) {
+        specs['Bag'] = bagMatch[1].trim();
+      }
+    }
+  }
+
+  return specs;
 }

@@ -220,7 +220,16 @@ def extract_returned_specs(fields):
                     if idx > 0 and idx < len(text) - 1:
                         value = text[idx + 1:].strip()
                         if value:
-                            specs[col_suffix] = value
+                            # Split "Other: <corner spec>" out of zipper values
+                            # e.g. "Presto CR Zipper Other: Round Corners"
+                            if col_suffix == 'zipper' and ' Other:' in value:
+                                parts = value.split(' Other:', 1)
+                                specs[col_suffix] = parts[0].strip()
+                                corner_val = parts[1].strip()
+                                if corner_val:
+                                    specs['corners'] = corner_val
+                            else:
+                                specs[col_suffix] = value
                             break
                 break
     return specs

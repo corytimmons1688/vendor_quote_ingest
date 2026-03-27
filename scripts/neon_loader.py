@@ -143,6 +143,22 @@ def load_file(conn, table_name, data, run_id):
 
     # Vendor-extracted structured data (all vendors)
     vendor_extracted = data.get('vendor_extracted', {})
+
+    # Merge any returned_spec_* keys from vendor extractor into returned_specs
+    # (Ross finishing parser puts these directly in vendor_extracted)
+    if has_spec_columns:
+        ve_specs = {
+            k.replace('returned_spec_', ''): v
+            for k, v in vendor_extracted.items()
+            if k.startswith('returned_spec_')
+        }
+        if ve_specs:
+            # Merge: vendor extractor specs fill in NULLs from OCR returned_specs
+            merged = dict(zip(SPEC_COLUMN_SUFFIXES, returned_specs))
+            for suffix, value in ve_specs.items():
+                if suffix in merged and not merged[suffix]:
+                    merged[suffix] = value
+            returned_specs = tuple(merged.get(s) for s in SPEC_COLUMN_SUFFIXES)
     vendor_cols = VENDOR_EXTRACTED_COLUMNS.get(vendor, [])
     vendor_values = tuple(vendor_extracted.get(col) for col in vendor_cols)
 
@@ -270,6 +286,8 @@ def main():
     parser.add_argument('--vendor', required=True)
     parser.add_argument('--input-dir', required=True)
     parser.add_argument('--run-id', required=True)
+    parser.add_argument('--truncate', action='store_true',
+                        help='Truncate table before loading (for full reprocess)')
     args = parser.parse_args()
 
     table_name = VENDOR_TABLE_MAP.get(args.vendor)
@@ -283,6 +301,12 @@ def main():
     print(f"Loading {len(json_files)} files into {table_name}")
 
     conn = get_connection()
+
+    if args.truncate:
+        with conn.cursor() as cur:
+            cur.execute(f"TRUNCATE TABLE {table_name}")
+        conn.commit()
+        print(f"  Truncated {table_name}")
     total_rows = 0
     errors = []
 

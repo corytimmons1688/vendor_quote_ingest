@@ -32,3 +32,4 @@ parsed/
 
 # Logs
 *.log
+service_account.json

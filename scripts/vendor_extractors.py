@@ -166,6 +166,7 @@ def extract_ross(text):
     size_match = re.search(r'Product\s*Size[-–—]\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
     if size_match:
         result['product_size'] = size_match.group(1).strip()
+        result['returned_spec_size'] = result['product_size']
 
     # --- Colors ---
     colors_match = re.search(r'Colors[-–—]\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
@@ -173,11 +174,24 @@ def extract_ross(text):
         result['colors'] = colors_match.group(1).strip()
 
     # --- Materials (may span multiple lines with Stock#) ---
+    # Line 1 contains finish (keywords: Laminate, Matte, Gloss, Karess, Soft Touch)
+    # Line 2 contains substrate (e.g. WHITE MET PET / 2.5 MIL LDPE)
     mat_match = re.search(r'Materials[-–—]\s*(.+?)(?=Finishing|Date|$)', text, re.IGNORECASE | re.DOTALL)
     if mat_match:
-        materials = mat_match.group(1).strip().replace('\n', ' ')
+        materials_raw = mat_match.group(1).strip()
+        # Keep full blob for backwards compat
+        materials = materials_raw.replace('\n', ' ')
         materials = re.sub(r'\s+', ' ', materials)
         result['materials'] = materials
+
+        # Split individual Stock# lines
+        stock_lines = [l.strip() for l in materials_raw.split('\n') if l.strip()]
+        finish_keywords = re.compile(r'laminate|matte|gloss|karess|soft\s*touch|tactile|varnish', re.IGNORECASE)
+        for line in stock_lines:
+            if finish_keywords.search(line):
+                result['returned_spec_finish'] = line
+            elif re.search(r'PET|LDPE|BOPP|NYLON|FOIL|MET', line, re.IGNORECASE):
+                result['returned_spec_substrate'] = line
 
     # --- Finishing ---
     fin_match = re.search(r'Finishing[-–—]\s*(.+?)(?=Order|Quantity|Date|$)', text, re.IGNORECASE | re.DOTALL)
@@ -185,6 +199,32 @@ def extract_ross(text):
         finishing = fin_match.group(1).strip().replace('\n', ' ')
         finishing = re.sub(r'\s+', ' ', finishing)
         result['finishing'] = finishing
+
+        # Parse individual finishing sub-fields into returned_spec_* keys
+        # Known sub-fields in order they appear on Ross PDFs
+        finishing_fields = [
+            ('Seal Width', 'seal_type'),
+            ('Tear Notch', 'tear_notch'),
+            ('Hang Hole', 'hole_punch'),
+            ('Gusset', 'gusset_style'),
+            ('Zipper', 'zipper'),
+            ('Other', 'corners'),
+        ]
+        # Build regex to split on known field labels
+        field_names = [f[0] for f in finishing_fields]
+        # Split the finishing text by known field labels
+        # Pattern: lookahead for "FieldName:" or "FieldName ="
+        split_pattern = '|'.join(re.escape(name) for name in field_names)
+        parts = re.split(rf'({split_pattern})\s*[:=]\s*', finishing, flags=re.IGNORECASE)
+        # parts = ['', 'Seal Width', '.3125" Seal', 'Tear Notch', '2 - Tear Notch', ...]
+        field_map = {name.lower(): col for name, col in finishing_fields}
+        i = 1  # skip leading empty string
+        while i < len(parts) - 1:
+            label = parts[i].strip().lower()
+            value = parts[i + 1].strip()
+            if label in field_map and value:
+                result[f'returned_spec_{field_map[label]}'] = value
+            i += 2
 
     # --- Pricing table ---
     # Ross has TWO formats:
