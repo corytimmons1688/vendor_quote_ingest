@@ -186,20 +186,25 @@ def extract_ross(text):
         result['finishing'] = finishing
 
     # --- Pricing table ---
-    # Look for "Quantity ... Price Each ... Total" rows
+    # Ross format: "Quantity 250,000 500,000 ..." on one line
+    #              "Price Each $0.05155 $0.05019 ..." on next line
+    #              "Total $12,887.50 $25,095.00 ..." on next line
     pricing = []
 
-    # Match quantity row
-    qty_match = re.search(r'Quantity\s+([\d,\s]+)', text, re.IGNORECASE)
-    price_match = re.search(r'Price\s+Each\s+\$([\d.,\s$]+)', text, re.IGNORECASE)
-    total_match = re.search(r'(?:^|\n)\s*Total\s+\$([\d.,\s$]+)', text, re.IGNORECASE)
-    grand_match = re.search(r'Grand\s+Total\s+\$([\d.,\s$]+)', text, re.IGNORECASE)
+    # Extract full lines for quantity, price, total, grand total
+    qty_match = re.search(r'Quantity\s+([\d,\s]+?)(?:\n|$)', text, re.IGNORECASE)
+    # Price Each may or may not have $ prefix — OCR sometimes drops it
+    price_match = re.search(r'Price\s+Each\s+\$?([\d.,\s$]+?)(?:\n|$)', text, re.IGNORECASE)
+    # Total line (not Grand Total)
+    total_match = re.search(r'(?:^|\n)\s*Total\s+\$?([\d.,\s$]+?)(?:\n|$)', text, re.IGNORECASE | re.MULTILINE)
+    grand_match = re.search(r'Grand\s+Total\s+\$?([\d.,\s$]+?)(?:\n|$)', text, re.IGNORECASE)
 
     if qty_match and price_match:
         quantities = re.findall(r'[\d,]+', qty_match.group(1))
-        prices = re.findall(r'[\d.]+', price_match.group(1))
-        totals = re.findall(r'[\d,.]+', total_match.group(1)) if total_match else []
-        grands = re.findall(r'[\d,.]+', grand_match.group(1)) if grand_match else []
+        # Prices have decimals — match numbers with dots
+        prices = re.findall(r'\d+\.\d+', price_match.group(1))
+        totals = re.findall(r'[\d,]+\.?\d*', total_match.group(1)) if total_match else []
+        grands = re.findall(r'[\d,]+\.?\d*', grand_match.group(1)) if grand_match else []
 
         for i in range(min(len(quantities), len(prices))):
             entry = {
@@ -250,15 +255,21 @@ def extract_dazpak(text):
     """Extract specs and pricing from Dazpak OCR'd PDF text."""
     result = {}
 
-    # --- Quote number ---
-    qnum_match = re.search(r'Quote\s*#?\s*(\d+)', text, re.IGNORECASE)
-    if qnum_match:
-        result['quote_number'] = qnum_match.group(1)
-
-    # --- Quote date ---
-    date_match = re.search(r'(\d{2}/\d{2}/\d{2,4})', text)
-    if date_match:
-        result['quote_date'] = date_match.group(1)
+    # --- Quote number and date ---
+    # OCR format: "Calyx Containers 08/11/25 13766" or "| Date || Quote#"
+    # The date and quote# appear on the same line as company name
+    qdate_match = re.search(r'(\d{2}/\d{2}/\d{2,4})\s+(\d{4,6})', text)
+    if qdate_match:
+        result['quote_date'] = qdate_match.group(1)
+        result['quote_number'] = qdate_match.group(2)
+    else:
+        # Fallback: try separate patterns
+        qnum_match = re.search(r'Quote\s*#?\s*(\d{4,6})', text, re.IGNORECASE)
+        if qnum_match:
+            result['quote_number'] = qnum_match.group(1)
+        date_match = re.search(r'(\d{2}/\d{2}/\d{2,4})', text)
+        if date_match:
+            result['quote_date'] = date_match.group(1)
 
     # --- Item description (line after "Your Items:") ---
     item_match = re.search(r'Your\s+Items?\s*:?\s*\n?\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
@@ -306,30 +317,49 @@ def extract_dazpak(text):
     if pricing:
         result['pricing_json'] = json.dumps(pricing)
 
-    # --- Art & Plates ---
-    plate_match = re.search(r'(?:Art\s*&?\s*Plates|Plates)\s*\n?\s*\$?([\d,.]+\s*/?\s*\w*)', text, re.IGNORECASE)
-    if plate_match:
-        result['plate_cost'] = plate_match.group(1).strip()
+    # --- Bottom metadata line ---
+    # OCR format: "[Web Width [Repeat |Terms | FOB | _ An & Plates"
+    # Values line: "13.5000 5.0000 Net 30 Origin $400 / Color"
+    # These are on the line AFTER the header line containing "Web Width"
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if 'web width' in line.lower() or 'Web Width' in line:
+            # The values are on the next line
+            if i + 1 < len(lines):
+                vals_line = lines[i + 1].strip()
+                # Parse: "13.5000 5.0000 Net 30 Origin $400 / Color"
+                vals_match = re.match(
+                    r'([\d.]+)\s+([\d.]+)\s+(Net\s*\d+|COD|Prepaid)\s+(\w+)\s+\$?([\d,.]+\s*/?\s*\w*)',
+                    vals_line
+                )
+                if vals_match:
+                    result['web_width'] = vals_match.group(1)
+                    result['repeat_length'] = vals_match.group(2)
+                    result['terms'] = vals_match.group(3)
+                    result['fob'] = vals_match.group(4)
+                    result['plate_cost'] = vals_match.group(5).strip()
+                else:
+                    # Try partial matches
+                    nums = re.findall(r'[\d.]+', vals_line)
+                    if len(nums) >= 2:
+                        result['web_width'] = nums[0]
+                        result['repeat_length'] = nums[1]
+                    terms_m = re.search(r'(Net\s*\d+|COD|Prepaid)', vals_line, re.IGNORECASE)
+                    if terms_m:
+                        result['terms'] = terms_m.group(1)
+                    fob_m = re.search(r'(Origin|Destination)', vals_line, re.IGNORECASE)
+                    if fob_m:
+                        result['fob'] = fob_m.group(1)
+                    plate_m = re.search(r'\$?([\d,.]+\s*/\s*\w+)', vals_line)
+                    if plate_m:
+                        result['plate_cost'] = plate_m.group(1)
+            break
 
-    # --- Web Width ---
-    web_match = re.search(r'Web\s*Width\s*\n?\s*([\d.]+)', text, re.IGNORECASE)
-    if web_match:
-        result['web_width'] = web_match.group(1)
-
-    # --- Repeat ---
-    repeat_match = re.search(r'Repeat\s*\n?\s*([\d.]+)', text, re.IGNORECASE)
-    if repeat_match:
-        result['repeat_length'] = repeat_match.group(1)
-
-    # --- Terms ---
-    terms_match = re.search(r'[Tt]erms?\s*\n?\s*(Net\s*\d+|COD|Prepaid)', text, re.IGNORECASE)
-    if terms_match:
-        result['terms'] = terms_match.group(1).strip()
-
-    # --- FOB ---
-    fob_match = re.search(r'FOB\s*\n?\s*(Origin|Destination|\w+)', text, re.IGNORECASE)
-    if fob_match:
-        result['fob'] = fob_match.group(1).strip()
+    # Fallback plate cost if not found in metadata line
+    if 'plate_cost' not in result:
+        plate_match = re.search(r'(?:Art\s*&?\s*Plates|Plates)\s*\n?\s*\$?([\d,.]+\s*/?\s*\w*)', text, re.IGNORECASE)
+        if plate_match:
+            result['plate_cost'] = plate_match.group(1).strip()
 
     # --- Quote validity ---
     validity_match = re.search(r'(?:valid|Pricing valid)\s+for\s+(\d+\s*days)', text, re.IGNORECASE)

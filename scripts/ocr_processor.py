@@ -211,16 +211,18 @@ def extract_returned_specs(fields):
     specs = {}
     for field in fields:
         text = field.get('text', '')
-        # Try to match "Key: Value" pattern against known spec fields
+        # Try to match "Key: Value" or "Key- Value" pattern against known spec fields
         for spec_name, col_suffix in SPEC_FIELD_MAP.items():
             if text.lower().startswith(spec_name):
-                # Check for colon separator
-                idx = text.find(':')
-                if idx > 0 and idx < len(text) - 1:
-                    value = text[idx + 1:].strip()
-                    if value:
-                        specs[col_suffix] = value
-                        break
+                # Check for colon or dash separator
+                for sep in [':', '-', '–', '—']:
+                    idx = text.find(sep, len(spec_name) - 1)
+                    if idx > 0 and idx < len(text) - 1:
+                        value = text[idx + 1:].strip()
+                        if value:
+                            specs[col_suffix] = value
+                            break
+                break
     return specs
 
 
