@@ -292,6 +292,10 @@ def extract_ross(text):
 
     if pricing:
         result['pricing_json'] = json.dumps(pricing)
+        # Derive returned_spec_quantities from pricing table
+        qtys = [p['quantity'] for p in pricing if p.get('quantity')]
+        if qtys:
+            result['returned_spec_quantities'] = ', '.join(f'{int(q):,}' for q in qtys)
 
     # --- Plate / non-recurring charges ---
     plate_match = re.search(

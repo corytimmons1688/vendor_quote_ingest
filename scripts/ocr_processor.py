@@ -200,7 +200,6 @@ SPEC_FIELD_MAP = {
     'tear notch': 'tear_notch',
     'hole punch': 'hole_punch',
     'corners': 'corners',
-    'quantities': 'quantities',
 }
 
 
