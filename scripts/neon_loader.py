@@ -165,13 +165,24 @@ def load_file(conn, table_name, data, run_id):
         p.get('raw_text', '') for p in data['pages']
     )
 
-    # Extract email_from from JSON spec metadata if available
+    # Extract email_from and source_message_id from JSON spec metadata if available
     email_from = None
+    source_message_id = data.get('source_message_id')
+    request_date = None
     for page in data.get('pages', []):
         meta = page.get('metadata', {})
-        if meta and meta.get('email_from'):
-            email_from = meta['email_from']
-            break
+        if meta:
+            if not email_from and meta.get('email_from'):
+                email_from = meta['email_from']
+            if not source_message_id and meta.get('message_id'):
+                source_message_id = meta['message_id']
+            # For requested-spec pages, capture the email_date as request_date
+            spec_type = page.get('spec_type')
+            if spec_type == 'requested' and meta.get('email_date') and not request_date:
+                request_date = meta['email_date']
+
+    # response_date comes from the filename (the date the vendor's email arrived)
+    response_date = file_meta['email_date']
 
     base = (
         data['source_file'],
@@ -196,19 +207,42 @@ def load_file(conn, table_name, data, run_id):
         None  # error_message
     )
 
+    lineage = (
+        source_message_id,
+        request_date,
+        response_date,
+    )
+
     rows = []
     if has_spec_columns:
-        rows.append(base + requested_specs + returned_specs + ocr_fields + metadata + vendor_values)
+        rows.append(base + requested_specs + returned_specs + ocr_fields + metadata + lineage + vendor_values)
     else:
-        rows.append(base + ocr_fields + metadata + vendor_values)
+        rows.append(base + ocr_fields + metadata + lineage + vendor_values)
 
-    # Build INSERT SQL
+    # Build INSERT SQL with ON CONFLICT upsert
     vendor_col_names = ', '.join(vendor_cols) if vendor_cols else ''
     vendor_col_sql = f', {vendor_col_names}' if vendor_col_names else ''
+
+    # Non-key columns for the UPDATE SET clause
+    base_update_cols = [
+        'source_vendor', 'email_date', 'email_subject', 'email_from',
+    ]
+    post_ocr_update_cols = [
+        'raw_ocr_text',
+        'file_type', 'file_size_bytes', 'ocr_engine', 'ocr_version', 'page_count',
+        'processing_run', 'status', 'error_message',
+        'source_message_id', 'request_date', 'response_date',
+    ]
 
     if has_spec_columns:
         requested_cols = ', '.join(f'requested_spec_{s}' for s in SPEC_COLUMN_SUFFIXES)
         returned_cols = ', '.join(f'returned_spec_{s}' for s in SPEC_COLUMN_SUFFIXES)
+        spec_update_cols = (
+            [f'requested_spec_{s}' for s in SPEC_COLUMN_SUFFIXES]
+            + [f'returned_spec_{s}' for s in SPEC_COLUMN_SUFFIXES]
+        )
+        all_update_cols = base_update_cols + spec_update_cols + post_ocr_update_cols + list(vendor_cols)
+        update_set = ', '.join(f'{c} = EXCLUDED.{c}' for c in all_update_cols)
         insert_sql = f"""
             INSERT INTO {table_name} (
                 source_file, source_vendor, email_date, email_subject, email_from,
@@ -216,19 +250,27 @@ def load_file(conn, table_name, data, run_id):
                 {returned_cols},
                 raw_ocr_text,
                 file_type, file_size_bytes, ocr_engine, ocr_version, page_count,
-                processing_run, status, error_message
+                processing_run, status, error_message,
+                source_message_id, request_date, response_date
                 {vendor_col_sql}
             ) VALUES %s
+            ON CONFLICT (source_file) DO UPDATE SET
+                {update_set}
         """
     else:
+        all_update_cols = base_update_cols + post_ocr_update_cols + list(vendor_cols)
+        update_set = ', '.join(f'{c} = EXCLUDED.{c}' for c in all_update_cols)
         insert_sql = f"""
             INSERT INTO {table_name} (
                 source_file, source_vendor, email_date, email_subject, email_from,
                 raw_ocr_text,
                 file_type, file_size_bytes, ocr_engine, ocr_version, page_count,
-                processing_run, status, error_message
+                processing_run, status, error_message,
+                source_message_id, request_date, response_date
                 {vendor_col_sql}
             ) VALUES %s
+            ON CONFLICT (source_file) DO UPDATE SET
+                {update_set}
         """
 
     with conn.cursor() as cur:

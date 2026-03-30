@@ -42,7 +42,7 @@ def extract_tedpack(text):
     result = {}
     lines = text.split('\n')
 
-    # --- Specs ---
+    # --- Specs (strict: field at start of line) ---
     for line in lines:
         trimmed = line.strip()
         if not trimmed:
@@ -53,6 +53,26 @@ def extract_tedpack(text):
             if m:
                 result[col_name] = m.group(1).strip()
                 break
+
+    # --- Loose extraction fallback (Issue #5) ---
+    # If strict extraction found fewer than ~50% of expected spec fields, try
+    # loose patterns that match field names anywhere in the line.
+    expected_field_count = len(TEDPACK_SPEC_FIELDS)  # 13
+    found_spec_count = sum(1 for col in TEDPACK_SPEC_FIELDS.values() if col in result)
+    if found_spec_count < expected_field_count * 0.5:
+        for line in lines:
+            trimmed = line.strip()
+            if not trimmed:
+                continue
+            for field_name, col_name in TEDPACK_SPEC_FIELDS.items():
+                if col_name in result:
+                    continue  # already have this field
+                loose_pattern = re.compile(
+                    rf'{re.escape(field_name)}\s*[:\-]\s*(.+)', re.IGNORECASE
+                )
+                m = loose_pattern.search(trimmed)
+                if m:
+                    result[col_name] = m.group(1).strip()
 
     # --- Print method ---
     lower_text = text.lower()
@@ -114,6 +134,34 @@ def extract_tedpack(text):
 
     if pricing:
         result['pricing_json'] = json.dumps(pricing)
+
+    # --- Derive quantities from pricing tiers if not explicitly found ---
+    if not result.get('spec_quantities') and pricing:
+        all_qtys = set()
+        for section_prices in pricing.values():
+            if isinstance(section_prices, list):
+                for entry in section_prices:
+                    if isinstance(entry, dict) and 'quantity' in entry:
+                        all_qtys.add(entry['quantity'])
+        if all_qtys:
+            def _parse_qty_num(q):
+                """Normalize quantity string like '4.2K', '50K', '12.5M' to a float for sorting."""
+                q_clean = q.strip().upper()
+                multiplier = 1
+                if q_clean.endswith('K'):
+                    multiplier = 1_000
+                    q_clean = q_clean[:-1]
+                elif q_clean.endswith('M'):
+                    multiplier = 1_000_000
+                    q_clean = q_clean[:-1]
+                try:
+                    return float(q_clean.replace(',', '')) * multiplier
+                except ValueError:
+                    return 0
+
+            sorted_qtys = sorted(all_qtys, key=_parse_qty_num)
+            result['spec_quantities'] = ', '.join(sorted_qtys)
+            result['returned_spec_quantities'] = result['spec_quantities']
 
     # --- Plate cost ---
     plate_match = re.search(r'(?:printing\s*)?plate\s*cost[:\s]*\$?([\d,.]+\s*/\s*\w+)', text, re.IGNORECASE)
@@ -179,6 +227,13 @@ def extract_ross(text):
     app_match = re.search(r'Application[-–—]\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
     if app_match:
         result['application'] = app_match.group(1).strip()
+
+    # --- Derive bag spec from application field (Issue #7) ---
+    app = result.get('application', '')
+    if app:
+        bag_keywords = ['pouch', 'bag', 'sachet', 'packet', 'wrapper', 'envelope', 'sleeve', 'pillow']
+        if any(kw in app.lower() for kw in bag_keywords):
+            result['returned_spec_bag'] = app
 
     # --- Product Size ---
     size_match = re.search(r'Product\s*Size[-–—]\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
