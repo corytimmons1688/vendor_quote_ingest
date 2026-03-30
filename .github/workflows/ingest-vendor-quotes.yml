@@ -35,7 +35,7 @@ jobs:
         run: |
           INPUT_VENDOR="${{ github.event.inputs.vendor }}"
           MATRIX_VENDOR="${{ matrix.vendor }}"
-          if [ -z "$INPUT_VENDOR" ] || [ "$INPUT_VENDOR" = "$MATRIX_VENDOR" ]; then
+          if [ -z "$INPUT_VENDOR" ] || [ "$INPUT_VENDOR" = "all" ] || [ "$INPUT_VENDOR" = "$MATRIX_VENDOR" ]; then
             echo "skip=false" >> $GITHUB_OUTPUT
           else
             echo "skip=true" >> $GITHUB_OUTPUT
