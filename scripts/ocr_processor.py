@@ -213,7 +213,12 @@ def extract_returned_specs(fields):
         text = field.get('text', '')
         # Try to match "Key: Value" or "Key- Value" pattern against known spec fields
         for spec_name, col_suffix in SPEC_FIELD_MAP.items():
-            if text.lower().startswith(spec_name):
+            # Require exact field match — avoid "finishing" matching "finish"
+            lower = text.lower()
+            if lower.startswith(spec_name) and (
+                len(lower) == len(spec_name) or
+                lower[len(spec_name)] in (':', '-', '–', '—', ' ')
+            ) and not lower.startswith(spec_name + 'ing'):
                 # Check for colon or dash separator
                 for sep in [':', '-', '–', '—']:
                     idx = text.find(sep, len(spec_name) - 1)

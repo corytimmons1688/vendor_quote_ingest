@@ -222,6 +222,8 @@ def extract_ross(text):
         while i < len(parts) - 1:
             label = parts[i].strip().lower()
             value = parts[i + 1].strip()
+            # Clean leading "=" from values (Ross format: "Seal Width: = .3125")
+            value = re.sub(r'^=\s*', '', value)
             if label in field_map and value:
                 result[f'returned_spec_{field_map[label]}'] = value
             i += 2
