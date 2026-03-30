@@ -1,0 +1,66 @@
+-- ============================================================
+-- Migration 003: Reconcile spec column names
+--
+-- Migration 001 added columns with names that don't match the
+-- neon_loader code (e.g. returned_spec_gusset_style vs returned_spec_gusset).
+-- The base bronze_schema.sql and neon_loader use shorter names.
+-- This migration ensures all columns the loader expects exist.
+-- ============================================================
+
+-- --- est_bnz_ross ------------------------------------------------
+ALTER TABLE est_bnz_ross
+    ADD COLUMN IF NOT EXISTS requested_spec_bag              TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_size             TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_substrate        TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_finish           TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_embellishment    TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_fill_style       TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_seal_type        TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_gusset           TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_zipper           TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_tear_notch       TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_hole_punch       TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_corners          TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_quantities       TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_bag               TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_size              TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_substrate         TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_finish            TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_embellishment     TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_fill_style        TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_seal_type         TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_gusset            TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_zipper            TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_tear_notch        TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_hole_punch        TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_corners           TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_quantities        TEXT;
+
+-- --- est_bnz_dazpak ----------------------------------------------
+ALTER TABLE est_bnz_dazpak
+    ADD COLUMN IF NOT EXISTS requested_spec_bag              TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_size             TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_substrate        TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_finish           TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_embellishment    TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_fill_style       TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_seal_type        TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_gusset           TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_zipper           TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_tear_notch       TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_hole_punch       TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_corners          TEXT,
+    ADD COLUMN IF NOT EXISTS requested_spec_quantities       TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_bag               TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_size              TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_substrate         TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_finish            TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_embellishment     TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_fill_style        TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_seal_type         TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_gusset            TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_zipper            TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_tear_notch        TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_hole_punch        TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_corners           TEXT,
+    ADD COLUMN IF NOT EXISTS returned_spec_quantities        TEXT;

@@ -80,6 +80,10 @@ jobs:
             --input-dir "./downloads/${{ matrix.vendor }}" \
             --output-dir "./parsed/${{ matrix.vendor }}"
 
+      - name: Run database migrations
+        if: steps.filter.outputs.skip != 'true' && steps.download.outputs.file_count != '0'
+        run: python scripts/run_migrations.py
+
       - name: Load into Neon Database
         if: steps.filter.outputs.skip != 'true' && steps.download.outputs.file_count != '0'
         run: |

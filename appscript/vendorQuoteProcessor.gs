@@ -283,6 +283,11 @@ function findOutboundSpecsForSubject_(subject, vendorDomains) {
         specs = extractSpecsLoose_(body);
       }
       if (Object.keys(specs).length >= 2) {
+        // Backfill Quantities from email body if not captured by field extraction
+        if (!specs['Quantities']) {
+          const qty = extractQuantitiesFromBody_(body);
+          if (qty) specs['Quantities'] = qty;
+        }
         return specs;
       }
     }
@@ -339,6 +344,18 @@ function processThread_(thread, vendorFolder, vendor, dateStr) {
   if (Object.keys(requestedSpecs).length === 0 && vendor.repliesInNewThread && vendorMessages.length > 0) {
     const subject = vendorMessages[0].getSubject();
     requestedSpecs = findOutboundSpecsForSubject_(subject, vendor.domains);
+  }
+
+  // Backfill Quantities from email body if not captured by field extraction
+  if (!requestedSpecs['Quantities']) {
+    for (const msg of outboundMessages) {
+      const body = msg.getPlainBody();
+      const qty = extractQuantitiesFromBody_(body);
+      if (qty) {
+        requestedSpecs['Quantities'] = qty;
+        break;
+      }
+    }
   }
 
   // Save requested specs JSON if we found any
@@ -991,6 +1008,188 @@ function backfillMissingSidecars() {
   Logger.log(`Done. Checked ${checked} threads, created ${created} sidecars, skipped ${skipped} (already exist).`);
 }
 
+// --- ONE-TIME BACKFILL: Extract requested quantities from outbound email bodies
+// Finds existing _requested_specs.json files missing Quantities, locates the
+// corresponding Gmail thread, and extracts quantities from the email body prose.
+// Safe to run repeatedly — skips files that already have Quantities.
+function backfillRequestedQuantities() {
+  const startTime = Date.now();
+  const maxMs = 5 * 60 * 1000; // 5-minute guard
+  const rootFolder = DriveApp.getFolderById(CONFIG.rootFolderId);
+  const rossDomains = CONFIG.vendors.ross.domains;
+
+  // Get the Ross folder
+  const rossFolders = rootFolder.getFoldersByName('Ross');
+  if (!rossFolders.hasNext()) {
+    Logger.log('Ross folder not found');
+    return;
+  }
+  const rossFolder = rossFolders.next();
+
+  // Use ScriptProperties to track progress across runs (resume from last position)
+  const props = PropertiesService.getScriptProperties();
+  const PROGRESS_KEY = 'BACKFILL_QTY_LAST_FILE';
+  const lastProcessedFile = props.getProperty(PROGRESS_KEY) || '';
+
+  // Get all _requested_specs.json files in the Ross folder
+  let files = rossFolder.searchFiles('title contains "requested_specs" and mimeType = "application/json"');
+
+  let checked = 0;
+  let updated = 0;
+  let alreadyHasQty = 0;
+  let noEmailFound = 0;
+  let noQtyExtracted = 0;
+  let pastResume = !lastProcessedFile; // If no resume point, start from beginning
+
+  while (files.hasNext()) {
+    if ((Date.now() - startTime) >= maxMs) {
+      Logger.log(`Time limit reached. Run again to continue. Last file: checked ${checked}, updated ${updated}`);
+      return;
+    }
+
+    const file = files.next();
+    const fileName = file.getName();
+
+    // Skip until we pass the resume point
+    if (!pastResume) {
+      if (fileName === lastProcessedFile) {
+        pastResume = true;
+      }
+      continue;
+    }
+
+    // Only process Ross files
+    if (!fileName.includes('_Ross_')) continue;
+
+    checked++;
+
+    // Read existing JSON
+    let payload;
+    try {
+      payload = JSON.parse(file.getBlob().getDataAsString());
+    } catch (e) {
+      Logger.log(`Skipping ${fileName}: invalid JSON`);
+      continue;
+    }
+
+    // Skip if already has Quantities
+    if (payload.specifications && payload.specifications['Quantities']) {
+      alreadyHasQty++;
+      continue;
+    }
+
+    // Find the corresponding Gmail thread using messageId
+    const messageId = payload.messageId;
+    if (!messageId) {
+      noEmailFound++;
+      continue;
+    }
+
+    let outboundBodies = [];
+    try {
+      // Get the message, then its thread
+      const message = GmailApp.getMessageById(messageId);
+      if (!message) {
+        noEmailFound++;
+        continue;
+      }
+      const thread = message.getThread();
+      const messages = thread.getMessages();
+
+      // Collect outbound message bodies (Dan's requests)
+      for (const msg of messages) {
+        if (!isFromVendor_(msg, rossDomains)) {
+          const body = msg.getPlainBody();
+          if (body) outboundBodies.push(body);
+        }
+      }
+
+      // Also check cross-thread outbound (if vendor replied in a new thread)
+      if (outboundBodies.length === 0) {
+        const subject = payload.emailSubject || message.getSubject();
+        const flId = extractFlId_(subject);
+        if (flId) {
+          const query = `subject:"${flId}" -from:@${rossDomains[0]}`;
+          const threads = GmailApp.search(query, 0, 3);
+          for (const t of threads) {
+            for (const msg of t.getMessages()) {
+              if (!isFromVendor_(msg, rossDomains)) {
+                const body = msg.getPlainBody();
+                if (body) outboundBodies.push(body);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      Logger.log(`Gmail error for ${fileName}: ${e.message}`);
+      noEmailFound++;
+      continue;
+    }
+
+    if (outboundBodies.length === 0) {
+      noEmailFound++;
+      continue;
+    }
+
+    // Try to extract quantities from each outbound email body
+    let extractedQty = null;
+    for (const body of outboundBodies) {
+      // First try the standard labeled-field extraction
+      const specs = extractSpecifications_(body);
+      if (specs['Quantities']) {
+        extractedQty = specs['Quantities'];
+        break;
+      }
+      // Then try loose extraction
+      const looseSpecs = extractSpecsLoose_(body);
+      if (looseSpecs['Quantities']) {
+        extractedQty = looseSpecs['Quantities'];
+        break;
+      }
+      // Finally try body prose extraction
+      const qty = extractQuantitiesFromBody_(body);
+      if (qty) {
+        extractedQty = qty;
+        break;
+      }
+    }
+
+    if (!extractedQty) {
+      noQtyExtracted++;
+      continue;
+    }
+
+    // Update the JSON payload
+    if (!payload.specifications) payload.specifications = {};
+    payload.specifications['Quantities'] = extractedQty;
+    payload.quantitiesBackfilledAt = new Date().toISOString();
+
+    // Overwrite the file in Drive
+    try {
+      file.setContent(JSON.stringify(payload, null, 2));
+      updated++;
+      Logger.log(`Updated: ${fileName} → Quantities: ${extractedQty}`);
+    } catch (e) {
+      Logger.log(`ERROR updating ${fileName}: ${e.message}`);
+    }
+
+    // Save progress checkpoint
+    props.setProperty(PROGRESS_KEY, fileName);
+  }
+
+  // Clear the resume point when fully complete
+  if ((Date.now() - startTime) < maxMs) {
+    props.deleteProperty(PROGRESS_KEY);
+    Logger.log('Backfill complete (all files processed).');
+  }
+
+  Logger.log(
+    `Summary: checked=${checked}, updated=${updated}, alreadyHadQty=${alreadyHasQty}, ` +
+    `noEmailFound=${noEmailFound}, noQtyExtracted=${noQtyExtracted}`
+  );
+}
+
 // --- Loose spec extraction for older email formats ---
 // Matches "Field: Value" or "Field - Value" anywhere in a line (not just at start)
 // Also matches "W x H" size patterns and common spec indicators
@@ -1035,4 +1234,94 @@ function extractSpecsLoose_(plainBody) {
   }
 
   return specs;
+}
+
+// --- Quantity extraction from email body prose --------------------------------
+// Finds quantity patterns (5K, 10,000, 5000, etc.) in the outbound email body
+// when the "Quantities:" labeled field wasn't captured by field extraction.
+// Returns a comma-separated string of quantities, or null if none found.
+function extractQuantitiesFromBody_(plainBody) {
+  if (!plainBody) return null;
+
+  // Pattern matches quantities in common formats Dan uses:
+  //   "5K"  "10K"  "25K"            → shorthand thousands
+  //   "5,000"  "10,000"  "25,000"   → comma-separated numbers
+  //   "5000"  "10000"  "25000"      → plain numbers (only 4+ digits to avoid false positives)
+  // We look for clusters of 2+ quantities near each other (within a line or adjacent lines)
+  // to avoid picking up random numbers from signatures, phone numbers, etc.
+
+  const lines = plainBody.split('\n');
+  const qtyPattern = /\b(\d{1,3}(?:,\d{3})+|\d{4,}|\d+(?:\.\d+)?\s*[Kk])\b/g;
+
+  // Collect all candidate quantities with their line numbers
+  const candidates = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    // Skip signature lines, URLs, phone numbers, dates
+    if (!line || line.startsWith('--') || line.startsWith('___')) continue;
+    if (/^(?:tel|fax|phone|cell|mobile|office)\s*[:\-]/i.test(line)) continue;
+    if (/^\d{3}[-.\s]\d{3}[-.\s]\d{4}/.test(line)) continue;
+
+    let match;
+    while ((match = qtyPattern.exec(line)) !== null) {
+      const raw = match[1];
+      let numeric;
+      if (/[Kk]$/.test(raw) || /[Kk]\s*$/.test(raw)) {
+        // "5K" → 5000, "2.5K" → 2500
+        numeric = parseFloat(raw.replace(/[Kk]\s*$/, '')) * 1000;
+      } else {
+        numeric = parseInt(raw.replace(/,/g, ''), 10);
+      }
+      // Only consider quantities in plausible range for packaging (500 – 1,000,000)
+      if (numeric >= 500 && numeric <= 1000000) {
+        candidates.push({ lineIndex: i, numeric, raw: match[0].trim() });
+      }
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  // Find the best cluster: 2+ quantities within a 3-line window
+  let bestCluster = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const cluster = [candidates[i]];
+    for (let j = i + 1; j < candidates.length; j++) {
+      if (candidates[j].lineIndex - candidates[i].lineIndex <= 3) {
+        cluster.push(candidates[j]);
+      } else {
+        break;
+      }
+    }
+    if (cluster.length >= 2 && cluster.length > bestCluster.length) {
+      bestCluster = cluster;
+    }
+  }
+
+  // If no cluster of 2+, check for a single line with multiple quantities
+  if (bestCluster.length < 2) {
+    // Group candidates by line
+    const byLine = {};
+    for (const c of candidates) {
+      if (!byLine[c.lineIndex]) byLine[c.lineIndex] = [];
+      byLine[c.lineIndex].push(c);
+    }
+    for (const lineIdx of Object.keys(byLine)) {
+      if (byLine[lineIdx].length >= 2 && byLine[lineIdx].length > bestCluster.length) {
+        bestCluster = byLine[lineIdx];
+      }
+    }
+  }
+
+  if (bestCluster.length < 2) return null;
+
+  // De-duplicate and format: "5,000, 10,000, 25,000"
+  const seen = new Set();
+  const formatted = [];
+  for (const c of bestCluster) {
+    if (seen.has(c.numeric)) continue;
+    seen.add(c.numeric);
+    formatted.push(c.numeric.toLocaleString('en-US'));
+  }
+
+  return formatted.join(', ');
 }
