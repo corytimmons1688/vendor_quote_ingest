@@ -125,6 +125,26 @@ def extract_tedpack(text):
     if lead_match:
         result['lead_time'] = lead_match.group(0).strip()
 
+    # --- Copy spec_* fields to returned_spec_* ---
+    spec_to_returned = {
+        'spec_bag': 'returned_spec_bag',
+        'spec_size': 'returned_spec_size',
+        'spec_substrate': 'returned_spec_substrate',
+        'spec_finish': 'returned_spec_finish',
+        'spec_embellishment': 'returned_spec_embellishment',
+        'spec_fill_style': 'returned_spec_fill_style',
+        'spec_seal_type': 'returned_spec_seal_type',
+        'spec_gusset': 'returned_spec_gusset',
+        'spec_zipper': 'returned_spec_zipper',
+        'spec_tear_notch': 'returned_spec_tear_notch',
+        'spec_hole_punch': 'returned_spec_hole_punch',
+        'spec_corners': 'returned_spec_corners',
+        'spec_quantities': 'returned_spec_quantities',
+    }
+    for spec_key, returned_key in spec_to_returned.items():
+        if spec_key in result:
+            result[returned_key] = result[spec_key]
+
     return result
 
 
@@ -442,6 +462,16 @@ def extract_dazpak(text):
     validity_match = re.search(r'(?:valid|Pricing valid)\s+for\s+(\d+\s*days)', text, re.IGNORECASE)
     if validity_match:
         result['quote_validity'] = validity_match.group(1)
+
+    # --- returned_spec_* mappings ---
+    if result.get('item_size'):
+        result['returned_spec_size'] = result['item_size']
+    if result.get('material_structure'):
+        result['returned_spec_substrate'] = result['material_structure']
+    if pricing:
+        qtys = [p['quantity'] for p in pricing if p.get('quantity')]
+        if qtys:
+            result['returned_spec_quantities'] = ', '.join(qtys)
 
     return result
 

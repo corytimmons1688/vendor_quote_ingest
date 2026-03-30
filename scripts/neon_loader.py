@@ -24,7 +24,7 @@ VENDOR_TABLE_MAP = {
 }
 
 # Vendors whose tables have the requested/returned spec columns
-VENDORS_WITH_SPEC_COLUMNS = {'Ross', 'Dazpak'}
+VENDORS_WITH_SPEC_COLUMNS = {'Ross', 'Dazpak', 'Tedpack'}
 
 # Vendor-specific extracted columns (from vendor_extractors.py)
 VENDOR_EXTRACTED_COLUMNS = {

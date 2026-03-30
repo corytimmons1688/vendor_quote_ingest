@@ -12,6 +12,7 @@ const CONFIG = {
       searchQuery: 'from:@tedpack.com (subject:"Quote Request" OR subject:"FL-")',
       folderId: null,
       quoteInBody: true,
+      domains: ['tedpack.com'],
     },
     ross: {
       name: 'Ross',
@@ -511,6 +512,78 @@ function processTedpackMessage_(message, vendorFolder, vendor, dateStr) {
 
   // Classify print method: Digital vs Rotogravure
   const printMethod = classifyPrintMethod_(plainBody);
+
+  // Extract requested specs from Dan's outbound message in the same thread
+  const thread = message.getThread();
+  const allMessages = thread.getMessages();
+  let requestedSpecs = {};
+  let outboundMsg = null;
+  for (const msg of allMessages) {
+    if (!isFromVendor_(msg, ['tedpack.com'])) {
+      const body = msg.getPlainBody();
+      if (!body) continue;
+      const specs = extractSpecifications_(body);
+      if (Object.keys(specs).length >= 2) {
+        requestedSpecs = specs;
+        outboundMsg = msg;
+        break;
+      }
+    }
+  }
+
+  // Backfill Quantities from email body if not captured by field extraction
+  if (outboundMsg && !requestedSpecs['Quantities']) {
+    const qty = extractQuantitiesFromBody_(outboundMsg.getPlainBody());
+    if (qty) {
+      requestedSpecs['Quantities'] = qty;
+    }
+  }
+
+  // Save requested specs JSON if we found any
+  if (outboundMsg && Object.keys(requestedSpecs).length > 0) {
+    const reqSpecsFilename = `${messageDate}_${vendorName}_${sanitizedSubject}_requested_specs.json`;
+    try {
+      const reqSpecsPayload = {
+        vendor: 'Tedpack',
+        specType: 'requested',
+        messageId: outboundMsg.getId(),
+        emailDate: outboundMsg.getDate().toISOString(),
+        emailSubject: outboundMsg.getSubject(),
+        emailFrom: outboundMsg.getFrom(),
+        extractedAt: new Date().toISOString(),
+        specifications: requestedSpecs,
+      };
+      const reqSpecsBlob = Utilities.newBlob(
+        JSON.stringify(reqSpecsPayload, null, 2),
+        'application/json',
+        reqSpecsFilename
+      );
+      const reqSpecsFile = vendorFolder.createFile(reqSpecsBlob);
+      applyFileLabels_(reqSpecsFile);
+      result.filesCreated++;
+      result.logEntries.push({
+        timestamp: new Date().toISOString(),
+        vendor: vendorName,
+        type: 'requested_specifications',
+        filename: reqSpecsFilename,
+        mimeType: 'application/json',
+        size: reqSpecsBlob.getBytes().length,
+        messageId: outboundMsg.getId(),
+        status: 'SUCCESS',
+      });
+    } catch (e) {
+      result.logEntries.push({
+        timestamp: new Date().toISOString(),
+        vendor: vendorName,
+        type: 'requested_specifications',
+        filename: reqSpecsFilename,
+        mimeType: 'application/json',
+        size: 0,
+        messageId: outboundMsg ? outboundMsg.getId() : message.getId(),
+        status: `ERROR: ${e.message}`,
+      });
+    }
+  }
 
   // Save the email body as HTML
   const htmlFilename = `${messageDate}_${vendorName}_${sanitizedSubject}_body.html`;
@@ -1012,27 +1085,40 @@ function backfillMissingSidecars() {
 // Finds existing _requested_specs.json files missing Quantities, locates the
 // corresponding Gmail thread, and extracts quantities from the email body prose.
 // Safe to run repeatedly — skips files that already have Quantities.
-function backfillRequestedQuantities() {
+function backfillAllRequestedQuantities() {
+  for (const vendorKey of ['ross', 'dazpak', 'tedpack']) {
+    Logger.log(`--- Backfilling quantities for ${vendorKey} ---`);
+    backfillRequestedQuantities(vendorKey);
+  }
+}
+
+function backfillRequestedQuantities(vendorKey) {
+  const vendor = CONFIG.vendors[vendorKey];
+  if (!vendor) {
+    Logger.log(`Unknown vendor key: ${vendorKey}`);
+    return;
+  }
+
   const startTime = Date.now();
   const maxMs = 5 * 60 * 1000; // 5-minute guard
   const rootFolder = DriveApp.getFolderById(CONFIG.rootFolderId);
-  const rossDomains = CONFIG.vendors.ross.domains;
+  const vendorDomains = vendor.domains;
 
-  // Get the Ross folder
-  const rossFolders = rootFolder.getFoldersByName('Ross');
-  if (!rossFolders.hasNext()) {
-    Logger.log('Ross folder not found');
+  // Get the vendor folder
+  const vendorFolders = rootFolder.getFoldersByName(vendor.name);
+  if (!vendorFolders.hasNext()) {
+    Logger.log(`${vendor.name} folder not found`);
     return;
   }
-  const rossFolder = rossFolders.next();
+  const vendorFolder = vendorFolders.next();
 
   // Use ScriptProperties to track progress across runs (resume from last position)
   const props = PropertiesService.getScriptProperties();
-  const PROGRESS_KEY = 'BACKFILL_QTY_LAST_FILE';
+  const PROGRESS_KEY = `BACKFILL_QTY_LAST_FILE_${vendor.name}`;
   const lastProcessedFile = props.getProperty(PROGRESS_KEY) || '';
 
-  // Get all _requested_specs.json files in the Ross folder
-  let files = rossFolder.searchFiles('title contains "requested_specs" and mimeType = "application/json"');
+  // Get all _requested_specs.json files in the vendor folder
+  let files = vendorFolder.searchFiles('title contains "requested_specs" and mimeType = "application/json"');
 
   let checked = 0;
   let updated = 0;
@@ -1058,8 +1144,8 @@ function backfillRequestedQuantities() {
       continue;
     }
 
-    // Only process Ross files
-    if (!fileName.includes('_Ross_')) continue;
+    // Only process files for this vendor
+    if (!fileName.includes(`_${vendor.name}_`)) continue;
 
     checked++;
 
@@ -1098,7 +1184,7 @@ function backfillRequestedQuantities() {
 
       // Collect outbound message bodies (Dan's requests)
       for (const msg of messages) {
-        if (!isFromVendor_(msg, rossDomains)) {
+        if (!isFromVendor_(msg, vendorDomains)) {
           const body = msg.getPlainBody();
           if (body) outboundBodies.push(body);
         }
@@ -1109,11 +1195,11 @@ function backfillRequestedQuantities() {
         const subject = payload.emailSubject || message.getSubject();
         const flId = extractFlId_(subject);
         if (flId) {
-          const query = `subject:"${flId}" -from:@${rossDomains[0]}`;
+          const query = `subject:"${flId}" -from:@${vendorDomains[0]}`;
           const threads = GmailApp.search(query, 0, 3);
           for (const t of threads) {
             for (const msg of t.getMessages()) {
-              if (!isFromVendor_(msg, rossDomains)) {
+              if (!isFromVendor_(msg, vendorDomains)) {
                 const body = msg.getPlainBody();
                 if (body) outboundBodies.push(body);
               }
@@ -1181,11 +1267,11 @@ function backfillRequestedQuantities() {
   // Clear the resume point when fully complete
   if ((Date.now() - startTime) < maxMs) {
     props.deleteProperty(PROGRESS_KEY);
-    Logger.log('Backfill complete (all files processed).');
+    Logger.log(`${vendor.name} backfill complete (all files processed).`);
   }
 
   Logger.log(
-    `Summary: checked=${checked}, updated=${updated}, alreadyHadQty=${alreadyHasQty}, ` +
+    `${vendor.name} summary: checked=${checked}, updated=${updated}, alreadyHadQty=${alreadyHasQty}, ` +
     `noEmailFound=${noEmailFound}, noQtyExtracted=${noQtyExtracted}`
   );
 }
