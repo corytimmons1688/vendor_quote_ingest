@@ -24,17 +24,15 @@ TEDPACK_SPEC_FIELDS = {
     'size': 'spec_size',
     'substrate': 'spec_substrate',
     'finish': 'spec_finish',
-    'material': 'spec_material',
     'embellishment': 'spec_embellishment',
     'fill style': 'spec_fill_style',
     'seal type': 'spec_seal_type',
-    'gusset style': 'spec_gusset_style',
-    'gusset details': 'spec_gusset_details',
+    'gusset style': 'spec_gusset',
+    'gusset details': 'spec_gusset',
     'zipper': 'spec_zipper',
     'tear notch': 'spec_tear_notch',
     'hole punch': 'spec_hole_punch',
     'corners': 'spec_corners',
-    'printing method': 'spec_printing_method',
     'quantities': 'spec_quantities',
 }
 
@@ -206,7 +204,7 @@ def extract_ross(text):
             ('Seal Width', 'seal_type'),
             ('Tear Notch', 'tear_notch'),
             ('Hang Hole', 'hole_punch'),
-            ('Gusset', 'gusset_style'),
+            ('Gusset', 'gusset'),
             ('Zipper', 'zipper'),
             ('Other', 'corners'),
         ]

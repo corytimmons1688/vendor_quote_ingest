@@ -29,10 +29,10 @@ VENDORS_WITH_SPEC_COLUMNS = {'Ross', 'Dazpak'}
 # Vendor-specific extracted columns (from vendor_extractors.py)
 VENDOR_EXTRACTED_COLUMNS = {
     'Tedpack': [
-        'spec_bag', 'spec_size', 'spec_substrate', 'spec_finish', 'spec_material',
-        'spec_embellishment', 'spec_fill_style', 'spec_seal_type', 'spec_gusset_style',
-        'spec_gusset_details', 'spec_zipper', 'spec_tear_notch', 'spec_hole_punch',
-        'spec_corners', 'spec_printing_method', 'spec_quantities',
+        'spec_bag', 'spec_size', 'spec_substrate', 'spec_finish',
+        'spec_embellishment', 'spec_fill_style', 'spec_seal_type', 'spec_gusset',
+        'spec_zipper', 'spec_tear_notch', 'spec_hole_punch',
+        'spec_corners', 'spec_quantities',
         'print_method', 'pricing_json', 'plate_cost', 'lead_time', 'quote_id',
     ],
     'Ross': [
@@ -49,9 +49,9 @@ VENDOR_EXTRACTED_COLUMNS = {
 
 # Ordered list of spec column suffixes — must match schema column order
 SPEC_COLUMN_SUFFIXES = [
-    'bag', 'size', 'substrate', 'finish', 'material', 'embellishment',
-    'fill_style', 'seal_type', 'gusset_style', 'gusset_details',
-    'zipper', 'tear_notch', 'hole_punch', 'corners', 'printing_method',
+    'bag', 'size', 'substrate', 'finish', 'embellishment',
+    'fill_style', 'seal_type', 'gusset',
+    'zipper', 'tear_notch', 'hole_punch', 'corners',
     'quantities',
 ]
 
@@ -61,17 +61,15 @@ SPEC_NAME_TO_COLUMN = {
     'Size': 'size',
     'Substrate': 'substrate',
     'Finish': 'finish',
-    'Material': 'material',
     'Embellishment': 'embellishment',
     'Fill Style': 'fill_style',
     'Seal Type': 'seal_type',
-    'Gusset Style': 'gusset_style',
-    'Gusset Details': 'gusset_details',
+    'Gusset Style': 'gusset',
+    'Gusset Details': 'gusset',  # Both map to single gusset column
     'Zipper': 'zipper',
     'Tear Notch': 'tear_notch',
     'Hole Punch': 'hole_punch',
     'Corners': 'corners',
-    'Printing Method': 'printing_method',
     'Quantities': 'quantities',
 }
 
@@ -167,12 +165,20 @@ def load_file(conn, table_name, data, run_id):
         p.get('raw_text', '') for p in data['pages']
     )
 
+    # Extract email_from from JSON spec metadata if available
+    email_from = None
+    for page in data.get('pages', []):
+        meta = page.get('metadata', {})
+        if meta and meta.get('email_from'):
+            email_from = meta['email_from']
+            break
+
     base = (
         data['source_file'],
         vendor,
         file_meta['email_date'],
         file_meta['email_subject'],
-        None,  # email_from
+        email_from,
     )
 
     ocr_fields = (

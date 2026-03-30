@@ -47,35 +47,26 @@ CREATE TABLE IF NOT EXISTS est_bnz_ross (
     requested_spec_size             TEXT,
     requested_spec_substrate        TEXT,
     requested_spec_finish           TEXT,
-    requested_spec_material         TEXT,
     requested_spec_embellishment    TEXT,
     requested_spec_fill_style       TEXT,
     requested_spec_seal_type        TEXT,
-    requested_spec_gusset_style     TEXT,
-    requested_spec_gusset_details   TEXT,
+    requested_spec_gusset           TEXT,
     requested_spec_zipper           TEXT,
     requested_spec_tear_notch       TEXT,
     requested_spec_hole_punch       TEXT,
     requested_spec_corners          TEXT,
-    requested_spec_printing_method  TEXT,
     requested_spec_quantities       TEXT,
 
     -- Returned specs (from vendor's PDF quote response)
-    returned_spec_bag               TEXT,
     returned_spec_size              TEXT,
     returned_spec_substrate         TEXT,
     returned_spec_finish            TEXT,
-    returned_spec_material          TEXT,
-    returned_spec_embellishment     TEXT,
-    returned_spec_fill_style        TEXT,
     returned_spec_seal_type         TEXT,
-    returned_spec_gusset_style      TEXT,
-    returned_spec_gusset_details    TEXT,
+    returned_spec_gusset            TEXT,
     returned_spec_zipper            TEXT,
     returned_spec_tear_notch        TEXT,
     returned_spec_hole_punch        TEXT,
     returned_spec_corners           TEXT,
-    returned_spec_printing_method   TEXT,
     returned_spec_quantities        TEXT,
 
     -- Raw OCR text (full document, all pages combined)
@@ -90,7 +81,20 @@ CREATE TABLE IF NOT EXISTS est_bnz_ross (
     ingested_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     processing_run      TEXT,
     status              TEXT            DEFAULT 'raw',
-    error_message       TEXT
+    error_message       TEXT,
+
+    -- Ross-specific extracted fields
+    estimate_number     TEXT,
+    application         TEXT,
+    product_size        TEXT,
+    colors              TEXT,
+    materials           TEXT,
+    finishing           TEXT,
+    pricing_json        TEXT,
+    plate_cost          TEXT,
+    lead_time           TEXT,
+    quote_date          TEXT,
+    quote_validity      TEXT
 );
 
 -- -------------------------------------------------------
@@ -109,35 +113,26 @@ CREATE TABLE IF NOT EXISTS est_bnz_dazpak (
     requested_spec_size             TEXT,
     requested_spec_substrate        TEXT,
     requested_spec_finish           TEXT,
-    requested_spec_material         TEXT,
     requested_spec_embellishment    TEXT,
     requested_spec_fill_style       TEXT,
     requested_spec_seal_type        TEXT,
-    requested_spec_gusset_style     TEXT,
-    requested_spec_gusset_details   TEXT,
+    requested_spec_gusset           TEXT,
     requested_spec_zipper           TEXT,
     requested_spec_tear_notch       TEXT,
     requested_spec_hole_punch       TEXT,
     requested_spec_corners          TEXT,
-    requested_spec_printing_method  TEXT,
     requested_spec_quantities       TEXT,
 
     -- Returned specs (from vendor's PDF quote response)
-    returned_spec_bag               TEXT,
     returned_spec_size              TEXT,
     returned_spec_substrate         TEXT,
     returned_spec_finish            TEXT,
-    returned_spec_material          TEXT,
-    returned_spec_embellishment     TEXT,
-    returned_spec_fill_style        TEXT,
     returned_spec_seal_type         TEXT,
-    returned_spec_gusset_style      TEXT,
-    returned_spec_gusset_details    TEXT,
+    returned_spec_gusset            TEXT,
     returned_spec_zipper            TEXT,
     returned_spec_tear_notch        TEXT,
     returned_spec_hole_punch        TEXT,
     returned_spec_corners           TEXT,
-    returned_spec_printing_method   TEXT,
     returned_spec_quantities        TEXT,
 
     -- Raw OCR text (full document, all pages combined)
@@ -152,7 +147,22 @@ CREATE TABLE IF NOT EXISTS est_bnz_dazpak (
     ingested_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     processing_run      TEXT,
     status              TEXT            DEFAULT 'raw',
-    error_message       TEXT
+    error_message       TEXT,
+
+    -- Dazpak-specific extracted fields
+    quote_number        TEXT,
+    item_description    TEXT,
+    item_size           TEXT,
+    ink_colors          TEXT,
+    material_structure  TEXT,
+    pricing_json        TEXT,
+    plate_cost          TEXT,
+    web_width           TEXT,
+    repeat_length       TEXT,
+    terms               TEXT,
+    fob                 TEXT,
+    quote_date          TEXT,
+    quote_validity      TEXT
 );
 
 -- -------------------------------------------------------
