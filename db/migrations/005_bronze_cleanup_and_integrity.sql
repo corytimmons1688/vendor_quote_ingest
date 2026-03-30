@@ -62,7 +62,10 @@ ALTER TABLE est_bnz_dazpak
     ADD COLUMN IF NOT EXISTS response_date TEXT;
 
 -- ----- D) Fix pricing_json to JSONB ----------------------------
+-- Deferred: Some rows contain malformed JSON from OCR errors.
+-- Clean up bad JSON values first, then cast in a future migration.
+-- For now, NULL out rows that aren't valid JSON so they don't block queries.
 
-ALTER TABLE est_bnz_tedpack ALTER COLUMN pricing_json TYPE JSONB USING CASE WHEN pricing_json IS NOT NULL AND pricing_json != '' THEN pricing_json::jsonb ELSE NULL END;
-ALTER TABLE est_bnz_ross ALTER COLUMN pricing_json TYPE JSONB USING CASE WHEN pricing_json IS NOT NULL AND pricing_json != '' THEN pricing_json::jsonb ELSE NULL END;
-ALTER TABLE est_bnz_dazpak ALTER COLUMN pricing_json TYPE JSONB USING CASE WHEN pricing_json IS NOT NULL AND pricing_json != '' THEN pricing_json::jsonb ELSE NULL END;
+UPDATE est_bnz_tedpack SET pricing_json = NULL WHERE pricing_json IS NOT NULL AND pricing_json !~ '^\s*[\[{]';
+UPDATE est_bnz_ross SET pricing_json = NULL WHERE pricing_json IS NOT NULL AND pricing_json !~ '^\s*[\[{]';
+UPDATE est_bnz_dazpak SET pricing_json = NULL WHERE pricing_json IS NOT NULL AND pricing_json !~ '^\s*[\[{]';
