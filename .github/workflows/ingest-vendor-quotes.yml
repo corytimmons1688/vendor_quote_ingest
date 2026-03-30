@@ -99,6 +99,7 @@ jobs:
 
       - name: Report column population rates
         if: steps.filter.outputs.skip != 'true' && steps.download.outputs.file_count != '0'
+        continue-on-error: true
         run: python scripts/query_population_rates.py "${{ matrix.vendor }}"
 
       - name: Upload processing artifacts

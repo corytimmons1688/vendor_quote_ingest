@@ -37,15 +37,29 @@ def main():
     skip = {'ingestion_id', 'ingested_at', 'processing_run', 'status', 'error_message',
             'source_vendor', 'ocr_engine', 'ocr_version'}
 
+    # Get column data types
+    cur.execute("""
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_name = %s
+    """, (table,))
+    col_types = {row[0]: row[1] for row in cur.fetchall()}
+
     # Query population for each column
     results = []
     for col in columns:
         if col in skip:
             continue
-        cur.execute(f"""
-            SELECT COUNT(*) FROM {table}
-            WHERE {col} IS NOT NULL AND TRIM({col}) != ''
-        """)
+        if col_types.get(col) in ('text', 'character varying'):
+            cur.execute(f"""
+                SELECT COUNT(*) FROM {table}
+                WHERE {col} IS NOT NULL AND TRIM({col}) != ''
+            """)
+        else:
+            cur.execute(f"""
+                SELECT COUNT(*) FROM {table}
+                WHERE {col} IS NOT NULL
+            """)
         populated = cur.fetchone()[0]
         pct = (populated / total * 100) if total > 0 else 0
         results.append((col, populated, pct))
