@@ -97,6 +97,10 @@ jobs:
             --run-id "${{ github.run_id }}" \
             $TRUNCATE_FLAG
 
+      - name: Report column population rates
+        if: steps.filter.outputs.skip != 'true' && steps.download.outputs.file_count != '0'
+        run: python scripts/query_population_rates.py "${{ matrix.vendor }}"
+
       - name: Upload processing artifacts
         if: always() && steps.filter.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
