@@ -1081,6 +1081,119 @@ function backfillMissingSidecars() {
   Logger.log(`Done. Checked ${checked} threads, created ${created} sidecars, skipped ${skipped} (already exist).`);
 }
 
+// --- ONE-TIME BACKFILL: Create _requested_specs.json for existing Tedpack threads ---
+// Tedpack threads have Dan's outbound request + vendor reply in the same thread.
+// This backfill finds processed Tedpack threads, extracts Dan's outbound specs,
+// and creates _requested_specs.json sidecars where they don't exist yet.
+// Safe to run repeatedly — skips threads that already have the file.
+function backfillTedpackRequestedSpecs() {
+  const startTime = Date.now();
+  const maxMs = 5 * 60 * 1000;
+  const rootFolder = DriveApp.getFolderById(CONFIG.rootFolderId);
+  const vendor = CONFIG.vendors.tedpack;
+  const vendorFolder = getOrCreateFolder_(rootFolder, vendor.name);
+  let created = 0;
+  let skipped = 0;
+  let checked = 0;
+  let noOutbound = 0;
+
+  // Search for processed Tedpack threads
+  const query = `${vendor.searchQuery} label:${CONFIG.processedLabel}`;
+  const threads = GmailApp.search(query, 0, 200);
+  Logger.log(`Tedpack: checking ${threads.length} processed threads for missing requested specs`);
+
+  for (const thread of threads) {
+    if ((Date.now() - startTime) >= maxMs) {
+      Logger.log(`Time limit reached. Run again to continue.`);
+      break;
+    }
+    checked++;
+
+    const messages = thread.getMessages();
+
+    // Find vendor messages (from tedpack.com) and outbound messages (from Dan)
+    let firstVendorMsg = null;
+    const outboundMessages = [];
+    for (const message of messages) {
+      if (isFromVendor_(message, vendor.domains)) {
+        if (!firstVendorMsg) firstVendorMsg = message;
+      } else {
+        outboundMessages.push(message);
+      }
+    }
+
+    if (!firstVendorMsg || outboundMessages.length === 0) {
+      noOutbound++;
+      continue;
+    }
+
+    // Build filename using vendor message date (matches how processTedpackMessage_ names files)
+    const messageDate = Utilities.formatDate(
+      firstVendorMsg.getDate(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HHmmss'
+    );
+    const sanitizedSubject = sanitizeFilename_(firstVendorMsg.getSubject());
+    const specsFilename = `${messageDate}_${vendor.name}_${sanitizedSubject}_requested_specs.json`;
+
+    if (fileExistsInFolder_(vendorFolder, specsFilename)) {
+      skipped++;
+      continue;
+    }
+
+    // Extract specs from Dan's outbound message
+    let requestedSpecs = {};
+    for (const msg of outboundMessages) {
+      const body = msg.getPlainBody();
+      if (!body) continue;
+
+      let specs = extractSpecifications_(body);
+      if (Object.keys(specs).length < 3) {
+        specs = extractSpecsLoose_(body);
+      }
+      if (Object.keys(specs).length >= 2) {
+        // Backfill quantities if missing
+        if (!specs['Quantities']) {
+          const qty = extractQuantitiesFromBody_(body);
+          if (qty) specs['Quantities'] = qty;
+        }
+        requestedSpecs = specs;
+        break;
+      }
+    }
+
+    if (Object.keys(requestedSpecs).length < 2) {
+      noOutbound++;
+      continue;
+    }
+
+    // Create the sidecar JSON
+    try {
+      const outMsg = outboundMessages[0];
+      const specsPayload = {
+        vendor: vendor.name,
+        specType: 'requested',
+        messageId: outMsg.getId(),
+        emailDate: outMsg.getDate().toISOString(),
+        emailSubject: outMsg.getSubject(),
+        emailFrom: outMsg.getFrom(),
+        extractedAt: new Date().toISOString(),
+        specifications: requestedSpecs,
+      };
+      const specsBlob = Utilities.newBlob(
+        JSON.stringify(specsPayload, null, 2),
+        'application/json',
+        specsFilename
+      );
+      vendorFolder.createFile(specsBlob);
+      created++;
+      Logger.log(`Created: ${specsFilename}`);
+    } catch (e) {
+      Logger.log(`ERROR creating ${specsFilename}: ${e.message}`);
+    }
+  }
+
+  Logger.log(`Tedpack backfill done. Checked ${checked} threads, created ${created}, skipped ${skipped}, noOutbound ${noOutbound}.`);
+}
+
 // --- ONE-TIME BACKFILL: Extract requested quantities from outbound email bodies
 // Finds existing _requested_specs.json files missing Quantities, locates the
 // corresponding Gmail thread, and extracts quantities from the email body prose.
