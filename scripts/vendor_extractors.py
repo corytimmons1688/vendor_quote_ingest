@@ -8,6 +8,15 @@ import json
 import re
 
 
+def _rejoin_split_numbers(text):
+    """
+    Fix OCR artefact where a comma-formatted number is split across two lines.
+    e.g. "10,\n000 $0.652..." → "10,000 $0.652..."
+    Handles thousands-comma splits (digit(s) + comma + newline + exactly 3 digits).
+    """
+    return re.sub(r'(\d+,)\n(\d{3})\b', r'\1\2', text)
+
+
 # ============================================================
 # TEDPACK — HTML email body
 # ============================================================
@@ -210,6 +219,7 @@ def extract_tedpack(text):
 
 def extract_ross(text):
     """Extract specs and pricing from Ross OCR'd PDF text."""
+    text = _rejoin_split_numbers(text)
     result = {}
 
     # --- Estimate number ---
@@ -365,6 +375,9 @@ def extract_ross(text):
                     entry['grand_total'] = grands[i]
                 pricing.append(entry)
 
+    # Drop any tiers with a leading-zero quantity ("000") — OCR line-split artefact
+    pricing = [p for p in pricing if p.get('quantity', '0')[0] != '0']
+
     if pricing:
         result['pricing_json'] = json.dumps(pricing)
         # Derive returned_spec_quantities from pricing table
@@ -405,6 +418,7 @@ def extract_ross(text):
 
 def extract_dazpak(text):
     """Extract specs and pricing from Dazpak OCR'd PDF text."""
+    text = _rejoin_split_numbers(text)
     result = {}
 
     # --- Quote number and date ---
@@ -465,6 +479,9 @@ def extract_dazpak(text):
             'price_per_msi': match[2],
             'price_each': match[3],
         })
+
+    # Drop any tiers with a leading-zero quantity ("000") — OCR line-split artefact
+    pricing = [p for p in pricing if p.get('quantity', '0')[0] != '0']
 
     if pricing:
         result['pricing_json'] = json.dumps(pricing)
