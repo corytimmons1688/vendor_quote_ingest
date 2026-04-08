@@ -448,10 +448,10 @@ def extract_dazpak(text):
     # Also scan OCR lines for description patterns (sometimes "Your Items:" is missing)
     desc_line = result.get('item_description', '')
     if not desc_line:
-        # Fallback: find lines with "Printed" + bag type keywords
+        # Fallback: find lines with bag type keywords + material hints
         for line in text.split('\n'):
             s = line.strip()
-            if re.search(r'Printed\s+(?:Laminated\s+)?(?:SUP|3\s*S(?:ide\s*)?S(?:eal)?|Pouch)', s, re.IGNORECASE):
+            if re.search(r'(?:Printed\s+(?:Laminated\s+)?)?(?:SUP|3\s*S(?:ide\s*)?S(?:eal)?|Pouch|Bag)\s+.*(?:PET|Varnish)', s, re.IGNORECASE):
                 desc_line = s
                 result['item_description'] = s
                 break
@@ -494,6 +494,8 @@ def extract_dazpak(text):
             result['returned_spec_bag'] = 'SUP'
         elif re.search(r'3\s*S(?:ide\s*)?S(?:eal)?|3SS', text, re.IGNORECASE):
             result['returned_spec_bag'] = '3_SIDE_SEAL'
+        elif re.search(r'\bBag\b', text):
+            result['returned_spec_bag'] = 'SUP'
     if 'returned_spec_finish' not in result:
         if re.search(r'Soft\s*Touch', text, re.IGNORECASE):
             result['returned_spec_finish'] = 'SOFT_TOUCH'
@@ -505,8 +507,8 @@ def extract_dazpak(text):
         elif re.search(r'\bGloss\b', text, re.IGNORECASE):
             result['returned_spec_finish'] = 'GLOSS'
 
-    # --- Item size (e.g. 5"W X 5.25" H + 3" BG) ---
-    size_match = re.search(r'([\d.]+"\s*W\s*[Xx×]\s*[\d.]+"\s*H\s*(?:\+\s*[\d.]+"\s*BG)?)', text)
+    # --- Item size (e.g. 5"W X 5.25" H + 3" BG, or 8 W X6"H + 2.625" BG) ---
+    size_match = re.search(r'([\d.]+"?\s*W\s*[Xx×]\s*[\d.]+"?\s*H\s*(?:\+\s*[\d.]+"?\s*BG)?)', text)
     if size_match:
         result['item_size'] = size_match.group(1).strip()
 
