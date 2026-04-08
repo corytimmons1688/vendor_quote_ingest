@@ -487,6 +487,24 @@ def extract_dazpak(text):
         elif re.search(r'Gloss', desc_line, re.IGNORECASE):
             result['returned_spec_finish'] = 'GLOSS'
 
+    # Fallback: scan full OCR text for bag/finish if not recovered from desc_line
+    # (some PDFs have the description embedded in material keyword lines)
+    if 'returned_spec_bag' not in result:
+        if re.search(r'\bSUP\b', text):
+            result['returned_spec_bag'] = 'SUP'
+        elif re.search(r'3\s*S(?:ide\s*)?S(?:eal)?|3SS', text, re.IGNORECASE):
+            result['returned_spec_bag'] = '3_SIDE_SEAL'
+    if 'returned_spec_finish' not in result:
+        if re.search(r'Soft\s*Touch', text, re.IGNORECASE):
+            result['returned_spec_finish'] = 'SOFT_TOUCH'
+        elif re.search(r'Registered\s+Matte\s+Varnish', text, re.IGNORECASE):
+            result['returned_spec_finish'] = 'MATTE'
+            result['returned_spec_embellishment'] = 'REGISTERED_MATTE'
+        elif re.search(r'(?<!\w)[Mm]atte\s+PET', text):
+            result['returned_spec_finish'] = 'MATTE'
+        elif re.search(r'\bGloss\b', text, re.IGNORECASE):
+            result['returned_spec_finish'] = 'GLOSS'
+
     # --- Item size (e.g. 5"W X 5.25" H + 3" BG) ---
     size_match = re.search(r'([\d.]+"\s*W\s*[Xx×]\s*[\d.]+"\s*H\s*(?:\+\s*[\d.]+"\s*BG)?)', text)
     if size_match:
