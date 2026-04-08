@@ -444,6 +444,49 @@ def extract_dazpak(text):
     if item_match:
         result['item_description'] = item_match.group(1).strip()
 
+    # --- Parse bag specs from item description line ---
+    # Also scan OCR lines for description patterns (sometimes "Your Items:" is missing)
+    desc_line = result.get('item_description', '')
+    if not desc_line:
+        # Fallback: find lines with "Printed" + bag type keywords
+        for line in text.split('\n'):
+            s = line.strip()
+            if re.search(r'Printed\s+(?:Laminated\s+)?(?:SUP|3\s*S(?:ide\s*)?S(?:eal)?|Pouch)', s, re.IGNORECASE):
+                desc_line = s
+                result['item_description'] = s
+                break
+
+    if desc_line:
+        # Bag construction: SUP / 3 Side Seal / 3SS / Pouch
+        if re.search(r'\bSUP\b', desc_line, re.IGNORECASE):
+            result['returned_spec_bag'] = 'SUP'
+        elif re.search(r'3\s*S(?:ide\s*)?S(?:eal)?|3SS', desc_line, re.IGNORECASE):
+            result['returned_spec_bag'] = '3_SIDE_SEAL'
+        elif re.search(r'\bPouch\b', desc_line, re.IGNORECASE):
+            result['returned_spec_bag'] = 'SUP'
+
+        # Zipper: CR Zipper (OCR may truncate to "Zippe[" or "Zippe")
+        if re.search(r'CR\s*Zippe', desc_line, re.IGNORECASE):
+            result['returned_spec_zipper'] = 'CR'
+
+    # Fallback zipper scan: check full text if not found in description line
+    if 'returned_spec_zipper' not in result:
+        if re.search(r'CR\s*Zippe', text, re.IGNORECASE):
+            result['returned_spec_zipper'] = 'CR'
+
+    # Finish: extract from face film description
+    # Order matters — check most specific first
+    if desc_line:
+        if re.search(r'Soft\s*Touch', desc_line, re.IGNORECASE):
+            result['returned_spec_finish'] = 'SOFT_TOUCH'
+        elif re.search(r'Registered\s+Matte\s+Varnish', desc_line, re.IGNORECASE):
+            result['returned_spec_finish'] = 'MATTE'
+            result['returned_spec_embellishment'] = 'REGISTERED_MATTE'
+        elif re.search(r'Matte', desc_line, re.IGNORECASE):
+            result['returned_spec_finish'] = 'MATTE'
+        elif re.search(r'Gloss', desc_line, re.IGNORECASE):
+            result['returned_spec_finish'] = 'GLOSS'
+
     # --- Item size (e.g. 5"W X 5.25" H + 3" BG) ---
     size_match = re.search(r'([\d.]+"\s*W\s*[Xx×]\s*[\d.]+"\s*H\s*(?:\+\s*[\d.]+"\s*BG)?)', text)
     if size_match:
@@ -455,14 +498,21 @@ def extract_dazpak(text):
         result['ink_colors'] = ink_match.group(1).strip()
 
     # --- Material structure (lines between size and pricing) ---
-    # Look for material keywords
+    # Include the description line (face film info) plus adhesive/backing lines
     materials = []
     for line in text.split('\n'):
         stripped = line.strip()
         if any(kw in stripped.lower() for kw in ['adhesive', 'met pet', 'metpet', 'ldpe', 'evoh', 'bopp', 'nylon', 'ppe']):
             if len(stripped) < 100:  # Avoid capturing full pricing lines
                 materials.append(stripped)
-    if materials:
+    # Prepend description line if it contains face film info not already in materials
+    if desc_line and re.search(r'PET|Varnish|BOPP', desc_line, re.IGNORECASE):
+        desc_clean = desc_line
+        if materials:
+            result['material_structure'] = desc_clean + ' / ' + ' / '.join(materials)
+        else:
+            result['material_structure'] = desc_clean
+    elif materials:
         result['material_structure'] = ' / '.join(materials)
 
     # --- Pricing table ---
