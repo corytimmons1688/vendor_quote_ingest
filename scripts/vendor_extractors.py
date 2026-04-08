@@ -229,7 +229,9 @@ def extract_ross(text):
 
     # --- Quote date ---
     # Format: "Date Fri, Apr 4, 2025" or "Date: Thu, Mar 20, 2025" or "Date Thu, Nov 14, 2024"
-    date_match = re.search(r'Date\s*:?\s*(\w{3},?\s+\w{3}\s+\d{1,2},?\s*\d{4})', text, re.IGNORECASE)
+    # OCR variants: truncated weekday ("Fr", "Fi"), truncated month ("Ju", "Jl"),
+    #               missing space before day ("Jul2"), full weekday ("Wednesday")
+    date_match = re.search(r'Date\s*:?\s*(\w{2,},?\s+\w{2,}\s*\d{1,2},?\s*\d{4})', text, re.IGNORECASE)
     if date_match:
         result['quote_date'] = date_match.group(1)
 
