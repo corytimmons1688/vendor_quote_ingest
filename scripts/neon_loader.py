@@ -9,6 +9,7 @@ populated from structured JSON specs and OCR'd PDF field extraction respectively
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,9 +19,9 @@ from psycopg2.extras import execute_values
 
 
 VENDOR_TABLE_MAP = {
-    'Tedpack': 'est_bnz_tedpack',
-    'Ross':    'est_bnz_ross',
-    'Dazpak':  'est_bnz_dazpak',
+    'Tedpack': 'est_ex_br_tedpack',
+    'Ross':    'est_ex_br_ross',
+    'Dazpak':  'est_ex_br_dazpak',
 }
 
 # Vendors whose tables have the requested/returned spec columns
@@ -82,17 +83,43 @@ def get_connection():
     )
 
 
+WEEKDAYS = {'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'}
+
+
 def parse_filename_metadata(filename):
     """
-    Extract metadata from the standardized filename.
-    Format: 2026-03-24_060000_Tedpack_Quote-for-March_att1.pdf
+    Extract metadata from the filename.
+
+    Standard format:  2026-03-24_060000_Tedpack_Quote-for-March_att1.pdf
+    Alternate format: Mon_24_Mar_2026_06_Tedpack_Quote-for-March_att1.pdf
     """
-    parts = filename.rsplit('.', 1)[0].split('_', 3)
+    stem = filename.rsplit('.', 1)[0]
+    parts = stem.split('_', 3)
+
     if len(parts) >= 3:
-        return {
-            'email_date': parts[0] if parts[0] else None,
-            'email_subject': parts[3] if len(parts) > 3 else None
-        }
+        # Standard format: YYYY-MM-DD as first token
+        if re.match(r'\d{4}-\d{2}-\d{2}$', parts[0]):
+            return {
+                'email_date': parts[0],
+                'email_subject': parts[3] if len(parts) > 3 else None,
+            }
+
+        # Alternate format: DayOfWeek_DD_Mon_YYYY_HH_Vendor_...
+        if parts[0] in WEEKDAYS:
+            all_parts = stem.split('_')
+            if len(all_parts) >= 5:
+                try:
+                    dt = datetime.strptime(
+                        f"{all_parts[1]}_{all_parts[2]}_{all_parts[3]}",
+                        "%d_%b_%Y",
+                    )
+                    return {
+                        'email_date': dt.strftime('%Y-%m-%d'),
+                        'email_subject': '_'.join(all_parts[5:]) if len(all_parts) > 5 else None,
+                    }
+                except ValueError:
+                    pass
+
     return {'email_date': None, 'email_subject': None}
 
 
@@ -284,7 +311,7 @@ def log_ingestion(conn, run_id, vendor, files_processed, rows_inserted, errors, 
     """Write to the ingestion audit log."""
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO est_bnz_ingestion_log
+            INSERT INTO est_ex_br_ingestion_log
             (processing_run, vendor, files_processed, rows_inserted, errors,
              completed_at, status, error_details)
             VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s)
