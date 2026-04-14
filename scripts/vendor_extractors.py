@@ -549,8 +549,10 @@ def extract_dazpak(text):
                 break
 
     if desc_line:
-        # Bag construction: SUP / 3 Side Seal / 3SS / Pouch
-        if re.search(r'\bSUP\b', desc_line, re.IGNORECASE):
+        # Bag construction: SUP / 3 Side Seal / 3SS / Flat Bottom Pouch / Pouch
+        if re.search(r'Flat\s*Bottom\s*Pouch', desc_line, re.IGNORECASE):
+            result['returned_spec_bag'] = 'FLAT_BOTTOM'
+        elif re.search(r'\bSUP\b', desc_line, re.IGNORECASE):
             result['returned_spec_bag'] = 'SUP'
         elif re.search(r'3\s*S(?:ide\s*)?S(?:eal)?|3SS', desc_line, re.IGNORECASE):
             result['returned_spec_bag'] = '3_SIDE_SEAL'
@@ -582,7 +584,9 @@ def extract_dazpak(text):
     # Fallback: scan full OCR text for bag/finish if not recovered from desc_line
     # (some PDFs have the description embedded in material keyword lines)
     if 'returned_spec_bag' not in result:
-        if re.search(r'\bSUP\b', text):
+        if re.search(r'Flat\s*Bottom\s*Pouch', text, re.IGNORECASE):
+            result['returned_spec_bag'] = 'FLAT_BOTTOM'
+        elif re.search(r'\bSUP\b', text):
             result['returned_spec_bag'] = 'SUP'
         elif re.search(r'3\s*S(?:ide\s*)?S(?:eal)?|3SS', text, re.IGNORECASE):
             result['returned_spec_bag'] = '3_SIDE_SEAL'
@@ -708,6 +712,16 @@ def extract_dazpak(text):
         qtys = [p['quantity'] for p in pricing if p.get('quantity')]
         if qtys:
             result['returned_spec_quantities'] = ', '.join(qtys)
+
+    # --- Flagging (Q15, Q17) ---
+    # Flag non-quote documents (POs, BOLs, shipping docs) — no quote_number and no pricing
+    if not result.get('quote_number') and not pricing:
+        result['status'] = 'flagged'
+        result['error_message'] = 'Non-quote document (no quote number or pricing)'
+    # Flag quotes with pricing but no item_size as incomplete
+    elif pricing and not result.get('item_size'):
+        result['status'] = 'flagged'
+        result['error_message'] = 'Incomplete quote - no item size'
 
     return result
 
