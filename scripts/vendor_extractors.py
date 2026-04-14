@@ -632,21 +632,46 @@ def extract_dazpak(text):
         result['material_structure'] = ' / '.join(materials)
 
     # --- Pricing table ---
+    # Extract only the pricing section between the header and "Web Width" to avoid
+    # matching adder columns or other numeric data outside the pricing table.
     pricing = []
+    pricing_section = ''
+    header_match = re.search(r'(?:UOM|YOM|Quantities).*(?:Price|Imp)', text, re.IGNORECASE)
+    footer_match = re.search(r'Web\s*Width', text, re.IGNORECASE)
+    if header_match:
+        start = header_match.end()
+        end = footer_match.start() if footer_match else len(text)
+        pricing_section = text[start:end]
+
     # Match lines like: 50,000 $245.2500 $3.2782 $0.2453
     # or: Impressions 50,000 ...
-    price_lines = re.findall(
-        r'(?:Impressions\s+)?(\d[\d,]+)\s+\$?([\d.]+)\s+\$?([\d.]+)\s+\$?([\d.]+)',
-        text
-    )
-    for match in price_lines:
-        qty = match[0].replace(',', '')
-        pricing.append({
-            'quantity': qty,
-            'price_per_m_imps': match[1],
-            'price_per_msi': match[2],
-            'price_each': match[3],
-        })
+    # Quantity must be a bare number (not preceded by $) and >= 1000
+    # Some PDFs omit quantities — lines start with $ prices only. Skip those.
+    for line in pricing_section.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        # Try to match: optional "Impressions" + quantity + 3 price columns
+        m = re.match(
+            r'(?:Impressions\s+)?(\d[\d,]+)\s+\$?([\d.]+)\s+\$?([\d.]+)\s+\$?([\d.]+)',
+            line
+        )
+        if m:
+            qty = m.group(1).replace(',', '')
+            # Validate: quantity must be >= 1000 (Dazpak doesn't quote under 1K)
+            # and price_each should be < $10 (per-unit, not total)
+            try:
+                qty_num = int(qty)
+                pe = float(m.group(4))
+            except ValueError:
+                continue
+            if qty_num >= 1000 and pe < 50:
+                pricing.append({
+                    'quantity': qty,
+                    'price_per_m_imps': m.group(2),
+                    'price_per_msi': m.group(3),
+                    'price_each': m.group(4),
+                })
 
     # Drop any tiers with a leading-zero quantity ("000") — OCR line-split artefact
     pricing = [p for p in pricing if p.get('quantity', '0')[0] != '0']
