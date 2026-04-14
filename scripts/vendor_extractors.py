@@ -6,6 +6,23 @@ specs, pricing, and metadata into column-ready dictionaries.
 
 import json
 import re
+from collections import Counter
+
+
+def _parse_qty_num(q):
+    """Normalize quantity string like '4.2K', '50K', '12.5M' to a float for sorting."""
+    q_clean = q.strip().upper()
+    multiplier = 1
+    if q_clean.endswith('K'):
+        multiplier = 1_000
+        q_clean = q_clean[:-1]
+    elif q_clean.endswith('M'):
+        multiplier = 1_000_000
+        q_clean = q_clean[:-1]
+    try:
+        return float(q_clean.replace(',', '')) * multiplier
+    except ValueError:
+        return 0
 
 
 def _rejoin_split_numbers(text):
@@ -87,7 +104,7 @@ def extract_tedpack(text):
     lower_text = text.lower()
     if 'plate cost' in lower_text or 'plate' in lower_text:
         result['print_method'] = 'Rotogravure'
-    elif 'digital' in lower_text:
+    elif re.search(r'printing\s*method\s*:\s*digital|digital\s+print', lower_text):
         result['print_method'] = 'Digital'
     else:
         result['print_method'] = 'Unknown'
@@ -107,20 +124,28 @@ def extract_tedpack(text):
         lower = trimmed.lower()
 
         # Detect pricing sections
-        if 'delivery air' in lower or 'air price' in lower:
+        # "and Duty" suffix = DDP (delivered duty paid) = delivered price, not freight
+        # "Delivery Sea Price to UT" = ocean delivered (Vireo Health emails)
+        if re.search(r'delivery\s+air|air\s+price', lower):
             current_section = 'air_delivered'
             continue
-        elif 'delivery ocean' in lower or 'ocean cost to' in lower:
-            current_section = 'ocean_delivered'
+        elif re.search(r'air\s+shipping\s+cost\s+and\s+duty', lower):
+            current_section = 'air_delivered'
             continue
-        elif 'factory price' in lower:
-            current_section = 'factory'
-            continue
-        elif 'air shipping cost' in lower:
+        elif re.search(r'air\s+shipping\s+cost', lower):
             current_section = 'air_shipping'
             continue
-        elif 'ocean shipping cost' in lower:
+        elif re.search(r'delivery\s+(?:ocean|sea)|(?:ocean|sea)\s+(?:cost|price)\s+to', lower):
+            current_section = 'ocean_delivered'
+            continue
+        elif re.search(r'(?:ocean|sea)\s+shipping\s+cost\s+and\s+duty', lower):
+            current_section = 'ocean_delivered'
+            continue
+        elif re.search(r'(?:ocean|sea)\s+shipping\s+cost', lower):
             current_section = 'ocean_shipping'
+            continue
+        elif re.search(r'factory\s+price', lower):
+            current_section = 'factory'
             continue
 
         # Match pricing lines: "1 SKU = 5K = $0.249/PCS" or "5K = $0.017/PCS" or "50K = $1,500"
@@ -141,6 +166,47 @@ def extract_tedpack(text):
                 'unit': unit
             })
 
+    # --- Post-extraction: validate shipping sections (Q13/Q14) ---
+    # Per-piece prices (unit=PCS, price < $5) in shipping sections are misrouted delivered prices
+    for ship_sec, deliv_sec in [('air_shipping', 'air_delivered'), ('ocean_shipping', 'ocean_delivered')]:
+        if ship_sec in pricing:
+            misrouted = []
+            kept = []
+            for entry in pricing[ship_sec]:
+                price_val = float(entry.get('price', '0').replace(',', ''))
+                unit = entry.get('unit', '').upper()
+                if 'PCS' in unit or (price_val < 5.0 and unit):
+                    misrouted.append(entry)
+                else:
+                    kept.append(entry)
+            if misrouted:
+                if deliv_sec not in pricing:
+                    pricing[deliv_sec] = []
+                pricing[deliv_sec].extend(misrouted)
+                pricing[ship_sec] = kept
+                if not kept:
+                    del pricing[ship_sec]
+
+    # --- Dual-price detection (Q4) ---
+    for section_name in list(pricing.keys()):
+        if section_name.startswith('_'):
+            continue
+        entries = pricing[section_name]
+        if not isinstance(entries, list) or len(entries) < 2:
+            continue
+        qty_counts = Counter(e.get('quantity') for e in entries)
+        repeated = {q: c for q, c in qty_counts.items() if c >= 2}
+        if repeated:
+            pricing[f'_{section_name}_dual_price'] = True
+            pricing[f'_{section_name}_repeat_count'] = max(repeated.values())
+
+    # --- High-quantity default section flagging (Q15) ---
+    for entry in pricing.get('default', []):
+        qty_num = _parse_qty_num(entry.get('quantity', '0'))
+        if qty_num >= 1_000_000:
+            pricing['_default_catalogue_suspected'] = True
+            break
+
     if pricing:
         result['pricing_json'] = json.dumps(pricing)
 
@@ -153,21 +219,6 @@ def extract_tedpack(text):
                     if isinstance(entry, dict) and 'quantity' in entry:
                         all_qtys.add(entry['quantity'])
         if all_qtys:
-            def _parse_qty_num(q):
-                """Normalize quantity string like '4.2K', '50K', '12.5M' to a float for sorting."""
-                q_clean = q.strip().upper()
-                multiplier = 1
-                if q_clean.endswith('K'):
-                    multiplier = 1_000
-                    q_clean = q_clean[:-1]
-                elif q_clean.endswith('M'):
-                    multiplier = 1_000_000
-                    q_clean = q_clean[:-1]
-                try:
-                    return float(q_clean.replace(',', '')) * multiplier
-                except ValueError:
-                    return 0
-
             sorted_qtys = sorted(all_qtys, key=_parse_qty_num)
             result['spec_quantities'] = ', '.join(sorted_qtys)
             result['returned_spec_quantities'] = result['spec_quantities']
@@ -182,7 +233,30 @@ def extract_tedpack(text):
     if lead_match:
         result['lead_time'] = lead_match.group(0).strip()
 
+    # --- Material-line substrate fallback (Q5/Q7) ---
+    # When Substrate says "Custom Substrate", extract actual substrate from Material line.
+    # Format: "Material: {finish_oil}+{substrate}/{backing}-{thickness}"
+    # e.g. "Matte Oil+ PET/METPET/PE -4mil" → substrate = METPET
+    substrate_val = result.get('spec_substrate', '')
+    if 'custom substrate' in substrate_val.lower():
+        mat_match = re.search(r'Material\s*:\s*(.+)', text, re.IGNORECASE)
+        if mat_match:
+            mat_line = mat_match.group(1).strip()
+            # Everything after "+" is substrate/backing structure
+            plus_idx = mat_line.find('+')
+            if plus_idx >= 0:
+                structure = mat_line[plus_idx + 1:].strip()
+                # Extract substrate keyword before "/" (backing separator)
+                # Known substrates: METPET, PET, ALOX-PET, CLR PET, BOPP, NYLON
+                sub_match = re.match(
+                    r'\s*(METPET|MET\s*PET|ALOX[- ]?PET|CLR\s*PET|PET|BOPP|NYLON)',
+                    structure, re.IGNORECASE
+                )
+                if sub_match:
+                    result['returned_spec_substrate'] = sub_match.group(1).strip()
+
     # --- Copy spec_* fields to returned_spec_* ---
+    # Only copy if returned_spec_* wasn't already set by a fallback (e.g. Material-line)
     spec_to_returned = {
         'spec_bag': 'returned_spec_bag',
         'spec_size': 'returned_spec_size',
@@ -199,8 +273,14 @@ def extract_tedpack(text):
         'spec_quantities': 'returned_spec_quantities',
     }
     for spec_key, returned_key in spec_to_returned.items():
-        if spec_key in result:
+        if spec_key in result and returned_key not in result:
             result[returned_key] = result[spec_key]
+
+    # --- ALOX PET flagging (Q10) ---
+    substrate = result.get('returned_spec_substrate', '') or result.get('spec_substrate', '')
+    if re.search(r'alox', substrate, re.IGNORECASE):
+        result['status'] = 'flagged'
+        result['error_message'] = 'ALOX PET - excluded from training'
 
     return result
 
