@@ -713,6 +713,15 @@ def extract_dazpak(text):
         if qtys:
             result['returned_spec_quantities'] = ', '.join(qtys)
 
+    # --- Print method ---
+    # "International" in source text = International Rotogravure
+    # All other Dazpak quotes = Domestic Flexographic
+    lower_text = text.lower()
+    if 'international' in lower_text:
+        result['print_method'] = 'Rotogravure'
+    else:
+        result['print_method'] = 'Flexographic'
+
     # --- Flagging (Q15, Q17) ---
     # Flag non-quote documents (POs, BOLs, shipping docs) — no quote_number and no pricing
     if not result.get('quote_number') and not pricing:
