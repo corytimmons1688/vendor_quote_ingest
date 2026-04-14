@@ -236,24 +236,36 @@ def extract_tedpack(text):
     # --- Material-line substrate fallback (Q5/Q7) ---
     # When Substrate says "Custom Substrate", extract actual substrate from Material line.
     # Format: "Material: {finish_oil}+{substrate}/{backing}-{thickness}"
-    # e.g. "Matte Oil+ PET/METPET/PE -4mil" → substrate = METPET
+    # e.g. "Matte Oil+\nPET/METPET/PE\n-4mil" → substrate = METPET
+    # Note: the material content often wraps across multiple lines.
     substrate_val = result.get('spec_substrate', '')
     if 'custom substrate' in substrate_val.lower():
-        mat_match = re.search(r'Material\s*:\s*(.+)', text, re.IGNORECASE)
+        # Capture Material line and continuation lines up to next spec field
+        mat_match = re.search(
+            r'Material\s*:\s*(.+?)(?=\nEmbellishment|\nFill Style|\nGusset|\nZipper|\nTear|\n\n)',
+            text, re.IGNORECASE | re.DOTALL
+        )
         if mat_match:
-            mat_line = mat_match.group(1).strip()
+            mat_block = mat_match.group(1).replace('\n', ' ').strip()
             # Everything after "+" is substrate/backing structure
-            plus_idx = mat_line.find('+')
+            plus_idx = mat_block.find('+')
             if plus_idx >= 0:
-                structure = mat_line[plus_idx + 1:].strip()
-                # Extract substrate keyword before "/" (backing separator)
-                # Known substrates: METPET, PET, ALOX-PET, CLR PET, BOPP, NYLON
-                sub_match = re.match(
-                    r'\s*(METPET|MET\s*PET|ALOX[- ]?PET|CLR\s*PET|PET|BOPP|NYLON)',
-                    structure, re.IGNORECASE
-                )
-                if sub_match:
-                    result['returned_spec_substrate'] = sub_match.group(1).strip()
+                structure = mat_block[plus_idx + 1:].strip()
+                # Extract substrate keyword from the structure block.
+                # Format is often "PET/METPET/PE" where METPET is the key substrate.
+                # Scan for known substrate keywords in the full structure string.
+                known_substrates = [
+                    (r'METPET', 'METPET'),
+                    (r'MET\s*PET', 'MET PET'),
+                    (r'ALOX[- ]?PET', 'ALOX PET'),
+                    (r'CLR\s*PET', 'CLR PET'),
+                    (r'BOPP', 'BOPP'),
+                    (r'NYLON', 'NYLON'),
+                ]
+                for pattern, canonical in known_substrates:
+                    if re.search(pattern, structure, re.IGNORECASE):
+                        result['returned_spec_substrate'] = canonical
+                        break
 
     # --- Copy spec_* fields to returned_spec_* ---
     # Only copy if returned_spec_* wasn't already set by a fallback (e.g. Material-line)

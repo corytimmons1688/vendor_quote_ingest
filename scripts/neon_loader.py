@@ -223,6 +223,10 @@ def load_file(conn, table_name, data, run_id):
         raw_ocr_text,
     )
 
+    # Use extractor-set status/error if present, otherwise default to 'raw'
+    row_status = vendor_extracted.get('status', 'raw')
+    row_error = vendor_extracted.get('error_message')
+
     metadata = (
         data['file_type'],
         data['file_size_bytes'],
@@ -230,8 +234,8 @@ def load_file(conn, table_name, data, run_id):
         data['ocr_version'],
         len(data['pages']),  # page_count
         run_id,
-        'raw',
-        None  # error_message
+        row_status,
+        row_error,
     )
 
     lineage = (
