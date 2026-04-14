@@ -1,0 +1,73 @@
+name: Backfill Ross from Drive (full re-ingest)
+
+on:
+  workflow_dispatch:
+
+env:
+  NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+  GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+  DRIVE_ROOT_FOLDER_ID: ${{ secrets.DRIVE_ROOT_FOLDER_ID }}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies (Tesseract OCR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+
+      - name: Install Python dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Download ALL files from Google Drive (no lookback filter)
+        id: download
+        run: |
+          python scripts/download_from_drive.py \
+            --vendor "Ross" \
+            --output-dir "./downloads/Ross" \
+            --lookback-hours 0
+
+      - name: Run OCR processing
+        if: steps.download.outputs.file_count != '0'
+        run: |
+          python scripts/ocr_processor.py \
+            --vendor "Ross" \
+            --input-dir "./downloads/Ross" \
+            --output-dir "./parsed/Ross"
+
+      - name: Run database migrations
+        if: steps.download.outputs.file_count != '0'
+        run: python scripts/run_migrations.py
+
+      - name: Load into Neon Database (truncate + reload)
+        if: steps.download.outputs.file_count != '0'
+        run: |
+          python scripts/neon_loader.py \
+            --vendor "Ross" \
+            --input-dir "./parsed/Ross" \
+            --run-id "${{ github.run_id }}" \
+            --truncate
+
+      - name: Report column population rates
+        if: steps.download.outputs.file_count != '0'
+        continue-on-error: true
+        run: python scripts/query_population_rates.py "Ross"
+
+      - name: Upload processing artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-ross-log
+          path: ./parsed/Ross/*.json
+          retention-days: 30
