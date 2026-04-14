@@ -1,0 +1,138 @@
+name: Audit Drive vs DB (Tedpack)
+
+on:
+  workflow_dispatch:
+
+env:
+  NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+  GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+  DRIVE_ROOT_FOLDER_ID: ${{ secrets.DRIVE_ROOT_FOLDER_ID }}
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install google-auth google-api-python-client psycopg2-binary
+
+      - name: Audit Drive vs DB
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, re, sys
+          from collections import Counter
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          import psycopg2
+
+          # --- Connect to Drive ---
+          creds_dict = json.loads(os.environ['GOOGLE_SERVICE_ACCOUNT_KEY'])
+          creds = service_account.Credentials.from_service_account_info(
+              creds_dict, scopes=['https://www.googleapis.com/auth/drive.readonly']
+          )
+          drive = build('drive', 'v3', credentials=creds)
+
+          # Find Tedpack folder
+          root_id = os.environ['DRIVE_ROOT_FOLDER_ID']
+          res = drive.files().list(
+              q=f"'{root_id}' in parents and name = 'Tedpack' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+              fields='files(id)', supportsAllDrives=True, includeItemsFromAllDrives=True
+          ).execute()
+          tedpack_folder_id = res['files'][0]['id']
+
+          # List ALL files in Tedpack folder
+          drive_files = []
+          page_token = None
+          while True:
+              res = drive.files().list(
+                  q=f"'{tedpack_folder_id}' in parents and trashed = false",
+                  fields='nextPageToken, files(id, name, createdTime, size)',
+                  orderBy='createdTime',
+                  pageSize=200,
+                  pageToken=page_token,
+                  supportsAllDrives=True,
+                  includeItemsFromAllDrives=True,
+              ).execute()
+              drive_files.extend(res.get('files', []))
+              page_token = res.get('nextPageToken')
+              if not page_token:
+                  break
+
+          print(f"=== DRIVE: {len(drive_files)} files in Tedpack folder ===\n")
+
+          # Extract quote IDs from Drive filenames
+          drive_names = set()
+          drive_quote_ids = set()
+          for f in drive_files:
+              drive_names.add(f['name'])
+              for m in re.findall(r'FL-DL-\d+|CQ-\d+', f['name']):
+                  drive_quote_ids.add(m)
+
+          print(f"Distinct FL-DL/CQ IDs in Drive: {len(drive_quote_ids)}")
+
+          # Date distribution of Drive files
+          monthly = Counter()
+          for f in drive_files:
+              ct = f.get('createdTime', '')[:7]  # YYYY-MM
+              monthly[ct] += 1
+          print(f"\nDrive files by month (createdTime):")
+          for m in sorted(monthly):
+              print(f"  {m}: {monthly[m]} files")
+
+          # --- Connect to DB ---
+          conn = psycopg2.connect(os.environ['NEON_DATABASE_URL'])
+          cur = conn.cursor()
+          cur.execute("SELECT source_file FROM est_ex_br_tedpack")
+          db_names = set(r[0] for r in cur.fetchall())
+
+          db_quote_ids = set()
+          for n in db_names:
+              for m in re.findall(r'FL-DL-\d+|CQ-\d+', n):
+                  db_quote_ids.add(m)
+
+          print(f"\n=== DB: {len(db_names)} rows in est_ex_br_tedpack ===")
+          print(f"Distinct FL-DL/CQ IDs in DB: {len(db_quote_ids)}")
+
+          # --- Compare ---
+          in_drive_not_db = drive_names - db_names
+          in_db_not_drive = db_names - drive_names
+
+          drive_only_quotes = drive_quote_ids - db_quote_ids
+          db_only_quotes = db_quote_ids - drive_quote_ids
+
+          print(f"\n=== COMPARISON ===")
+          print(f"Files in Drive but NOT in DB: {len(in_drive_not_db)}")
+          print(f"Files in DB but NOT in Drive: {len(in_db_not_drive)}")
+          print(f"Quote IDs in Drive but NOT in DB: {len(drive_only_quotes)}")
+          print(f"Quote IDs in DB but NOT in Drive: {len(db_only_quotes)}")
+
+          if drive_only_quotes:
+              print(f"\n--- Quote IDs in Drive only (not ingested) ---")
+              for q in sorted(drive_only_quotes):
+                  print(f"  {q}")
+
+          if in_drive_not_db:
+              print(f"\n--- Files in Drive only (first 50) ---")
+              missing = sorted(in_drive_not_db)[:50]
+              for n in missing:
+                  print(f"  {n}")
+              if len(in_drive_not_db) > 50:
+                  print(f"  ... and {len(in_drive_not_db) - 50} more")
+
+          if db_only_quotes:
+              print(f"\n--- Quote IDs in DB only (not in Drive) ---")
+              for q in sorted(db_only_quotes):
+                  print(f"  {q}")
+
+          cur.close()
+          conn.close()
+          PYEOF
