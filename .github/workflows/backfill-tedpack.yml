@@ -1,0 +1,128 @@
+name: Backfill TedPack from Drive (full re-ingest)
+
+on:
+  workflow_dispatch:
+
+env:
+  NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+  GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+  DRIVE_ROOT_FOLDER_ID: ${{ secrets.DRIVE_ROOT_FOLDER_ID }}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies (Tesseract OCR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+
+      - name: Install Python dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Download ALL files from Google Drive (no lookback filter)
+        id: download
+        run: |
+          python scripts/download_from_drive.py \
+            --vendor "Tedpack" \
+            --output-dir "./downloads/Tedpack" \
+            --lookback-hours 0
+
+      - name: Run OCR processing
+        if: steps.download.outputs.file_count != '0'
+        run: |
+          python scripts/ocr_processor.py \
+            --vendor "Tedpack" \
+            --input-dir "./downloads/Tedpack" \
+            --output-dir "./parsed/Tedpack"
+
+      - name: Run database migrations
+        if: steps.download.outputs.file_count != '0'
+        run: python scripts/run_migrations.py
+
+      - name: Load into Neon Database (truncate + reload)
+        if: steps.download.outputs.file_count != '0'
+        run: |
+          python scripts/neon_loader.py \
+            --vendor "Tedpack" \
+            --input-dir "./parsed/Tedpack" \
+            --run-id "${{ github.run_id }}" \
+            --truncate
+
+      - name: Report column population rates
+        if: steps.download.outputs.file_count != '0'
+        continue-on-error: true
+        run: python scripts/query_population_rates.py "Tedpack"
+
+      - name: Run Drive vs DB audit
+        if: always() && steps.download.outputs.file_count != '0'
+        continue-on-error: true
+        run: |
+          pip install psycopg2-binary
+          python3 -c "
+          import json, os, re
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          import psycopg2
+
+          creds = service_account.Credentials.from_service_account_info(
+              json.loads(os.environ['GOOGLE_SERVICE_ACCOUNT_KEY']),
+              scopes=['https://www.googleapis.com/auth/drive.readonly']
+          )
+          drive = build('drive', 'v3', credentials=creds)
+          root_id = os.environ['DRIVE_ROOT_FOLDER_ID']
+          res = drive.files().list(
+              q=f\"'{root_id}' in parents and name = 'Tedpack' and mimeType = 'application/vnd.google-apps.folder' and trashed = false\",
+              fields='files(id)', supportsAllDrives=True, includeItemsFromAllDrives=True
+          ).execute()
+          folder_id = res['files'][0]['id']
+
+          drive_files = []
+          pt = None
+          while True:
+              res = drive.files().list(
+                  q=f\"'{folder_id}' in parents and trashed = false\",
+                  fields='nextPageToken, files(name)', pageSize=500, pageToken=pt,
+                  supportsAllDrives=True, includeItemsFromAllDrives=True
+              ).execute()
+              drive_files.extend(res.get('files', []))
+              pt = res.get('nextPageToken')
+              if not pt: break
+
+          drive_quote_ids = set()
+          for f in drive_files:
+              for m in re.findall(r'FL-DL-\d+|CQ-\d+|FL-CQ-\d+', f['name']):
+                  drive_quote_ids.add(m)
+
+          conn = psycopg2.connect(os.environ['NEON_DATABASE_URL'])
+          cur = conn.cursor()
+          cur.execute('SELECT source_file FROM est_ex_br_tedpack')
+          db_names = set(r[0] for r in cur.fetchall())
+          db_quote_ids = set()
+          for n in db_names:
+              for m in re.findall(r'FL-DL-\d+|CQ-\d+|FL-CQ-\d+', n):
+                  db_quote_ids.add(m)
+
+          print(f'Drive: {len(drive_files)} files, {len(drive_quote_ids)} quote IDs')
+          print(f'DB: {len(db_names)} rows, {len(db_quote_ids)} quote IDs')
+          print(f'Drive-only quote IDs: {drive_quote_ids - db_quote_ids}')
+          print(f'DB-only quote IDs: {db_quote_ids - drive_quote_ids}')
+          "
+
+      - name: Upload processing artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-tedpack-log
+          path: ./parsed/Tedpack/*.json
+          retention-days: 30
