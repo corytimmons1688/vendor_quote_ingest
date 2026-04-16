@@ -378,16 +378,20 @@ def extract_ross(text):
         result['finishing'] = finishing
 
         # Parse individual finishing sub-fields into returned_spec_* keys
-        # Known sub-fields in order they appear on Ross PDFs
+        # Known sub-fields in order they appear on Ross PDFs.
+        # Per Cory: the "Gusset" field value (e.g., "K-Seal with Skirt") is the
+        # actual seal/construction type. "Seal Width" (.3125" Seal) is just the
+        # heat-seal width and is NOT the bag construction type.
         finishing_fields = [
-            ('Seal Width', 'seal_type'),
+            ('Seal Width', None),           # Drop: seal width, not bag type
             ('Tear Notch', 'tear_notch'),
             ('Hang Hole', 'hole_punch'),
-            ('Gusset', 'gusset'),
+            ('Gusset', 'seal_type'),        # Gusset field = seal_type per Cory
             ('Zipper', 'zipper'),
             ('Other', 'corners'),
         ]
-        # Build regex to split on known field labels
+        # Build regex to split on known field labels (including Seal Width so
+        # it doesn't contaminate the preceding field's value)
         field_names = [f[0] for f in finishing_fields]
         # Split the finishing text by known field labels
         # Pattern: lookahead for "FieldName:" or "FieldName ="
@@ -401,8 +405,9 @@ def extract_ross(text):
             value = parts[i + 1].strip()
             # Clean leading "=" from values (Ross format: "Seal Width: = .3125")
             value = re.sub(r'^=\s*', '', value)
-            if label in field_map and value:
-                result[f'returned_spec_{field_map[label]}'] = value
+            target_col = field_map.get(label)
+            if target_col and value:
+                result[f'returned_spec_{target_col}'] = value
             i += 2
 
     # --- Pricing table ---
