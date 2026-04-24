@@ -650,15 +650,17 @@ def extract_dazpak(text):
 
     # Match lines like: 50,000 $245.2500 $3.2782 $0.2453
     # or: Impressions 50,000 ...
-    # Quantity must be a bare number (not preceded by $) and >= 1000
+    # Some PDFs also include a "+/-" tolerance column (e.g. "50%" or bare "50"
+    # when OCR drops the %) between quantity and the price columns — skip it.
+    # Quantity must be a bare number (not preceded by $) and >= 1000.
     # Some PDFs omit quantities — lines start with $ prices only. Skip those.
     for line in pricing_section.split('\n'):
         line = line.strip()
         if not line:
             continue
-        # Try to match: optional "Impressions" + quantity + 3 price columns
+        # Try to match: optional "Impressions" + quantity + optional +/- col + 3 price columns
         m = re.match(
-            r'(?:Impressions\s+)?(\d[\d,]+)\s+\$?([\d.]+)\s+\$?([\d.]+)\s+\$?([\d.]+)',
+            r'(?:Impressions\s+)?(\d[\d,]+)\s+(?:\d{1,3}%?\s+)?\$?([\d.]+)\s+\$?([\d.]+)\s+\$?([\d.]+)',
             line
         )
         if m:
