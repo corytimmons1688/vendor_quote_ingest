@@ -614,7 +614,8 @@ def extract_dazpak(text):
         result['item_size'] = size_match.group(1).strip()
 
     # --- Ink colors ---
-    ink_match = re.search(r'Ink[-–—]?\s*(\d+\s*Colors?)', text, re.IGNORECASE)
+    # Accept variants: "Ink- 3 Colors", "Ink - 7 Colors", "Ink: 5 Colors"
+    ink_match = re.search(r'Ink\s*[-–—:]?\s*(\d+\s*Colors?)', text, re.IGNORECASE)
     if ink_match:
         result['ink_colors'] = ink_match.group(1).strip()
 
