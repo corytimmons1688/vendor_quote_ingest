@@ -68,6 +68,8 @@ def main():
     sel.add_argument('--quote-number')
     sel.add_argument('--source-file')
     sel.add_argument('--ingestion-id')
+    sel.add_argument('--where-raw', metavar='SQL',
+                     help='Raw WHERE clause (e.g. "file_type=\'html\' AND returned_spec_zipper IS NULL")')
     ap.add_argument('--apply', action='store_true',
                     help='Actually UPDATE rows (default: dry run)')
     args = ap.parse_args()
@@ -78,9 +80,12 @@ def main():
     elif args.source_file:
         where = 'source_file = %s'
         params = (args.source_file,)
-    else:
+    elif args.ingestion_id:
         where = 'ingestion_id = %s'
         params = (args.ingestion_id,)
+    else:
+        where = args.where_raw
+        params = ()
 
     conn = psycopg2.connect(os.environ['NEON_DATABASE_URL'], sslmode='require')
     conn.autocommit = False

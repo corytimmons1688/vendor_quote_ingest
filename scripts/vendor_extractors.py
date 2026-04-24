@@ -568,9 +568,17 @@ def extract_dazpak(text):
         if re.search(r'CR\s*Zippe', desc_line, re.IGNORECASE):
             result['returned_spec_zipper'] = 'CR'
 
-    # Fallback zipper scan: check full text if not found in description line
+    # Fallback zipper scan: check full text if not found in description line.
+    # Handles several formats seen across file types:
+    #   PDF description: "with CR Zipper", "Child Resistant Zipper"
+    #   Email body / spec-sheet line: "Zipper: Standard CR", "Zipper: CR", "Zipper: Child Resistant Zipper"
     if 'returned_spec_zipper' not in result:
-        if re.search(r'CR\s*Zippe', text, re.IGNORECASE):
+        if re.search(r'(?:CR|Child\s+Resistant)\s*Zippe', text, re.IGNORECASE):
+            result['returned_spec_zipper'] = 'CR'
+        elif re.search(
+            r'Zipper\s*:\s*(?:Standard\s+)?(?:CR|Child\s+Resistant)',
+            text, re.IGNORECASE,
+        ):
             result['returned_spec_zipper'] = 'CR'
 
     # Finish: extract from face film description
