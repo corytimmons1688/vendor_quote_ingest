@@ -17,7 +17,16 @@ from pdf2image import convert_from_path
 from bs4 import BeautifulSoup
 import openpyxl
 
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None
+
 from vendor_extractors import extract_for_vendor
+
+# Pages with at least this many non-whitespace chars from pdfplumber are
+# treated as having a real text layer; below this we fall back to OCR.
+TEXT_LAYER_MIN_CHARS = 50
 
 
 def get_tesseract_version():
@@ -71,19 +80,95 @@ def ocr_image(image):
     return '\n'.join(full_text_parts), fields
 
 
-def process_pdf(filepath):
-    """Convert PDF to images and OCR each page."""
-    pages = convert_from_path(filepath, dpi=300)
-    results = []
-
-    for page_num, page_image in enumerate(pages, start=1):
-        raw_text, fields = ocr_image(page_image)
-        results.append({
-            'page': page_num,
-            'raw_text': raw_text,
-            'fields': fields
+def text_layer_to_fields(raw_text):
+    """Synthesize per-line `fields` data from extracted text-layer text.
+    pdfplumber gives exact characters (no OCR), so confidence is 1.0."""
+    fields = []
+    line_num = 0
+    for line in raw_text.split('\n'):
+        line = line.rstrip()
+        if not line.strip():
+            continue
+        line_num += 1
+        fields.append({
+            'line_num': line_num,
+            'text': line,
+            'confidence': 1.0,
+            'word_count': len(line.split()),
         })
+    return fields
 
+
+def extract_pdf_text_layer(filepath):
+    """Per-page text-layer extraction via pdfplumber. Returns a list of
+    dicts with 'page', 'raw_text', and 'has_text_layer'. Returns None if
+    pdfplumber is unavailable or open() fails."""
+    if pdfplumber is None:
+        return None
+    try:
+        out = []
+        with pdfplumber.open(filepath) as pdf:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                txt = page.extract_text() or ''
+                non_ws = sum(1 for c in txt if not c.isspace())
+                out.append({
+                    'page': page_num,
+                    'raw_text': txt,
+                    'has_text_layer': non_ws >= TEXT_LAYER_MIN_CHARS,
+                })
+        return out
+    except Exception:
+        return None
+
+
+def process_pdf(filepath):
+    """Extract text from a PDF — text layer when present, OCR otherwise.
+
+    Tries pdfplumber per page first. Pages with a text layer skip OCR
+    entirely (faster, exact, preserves columns that tesseract drops).
+    Pages without a text layer (true scans) fall back to tesseract.
+
+    Returns a list of page dicts; each page dict carries an `engine` key
+    ('pdfplumber' or 'tesseract')."""
+    text_pages = extract_pdf_text_layer(filepath)
+    needs_ocr = text_pages is None or any(not p['has_text_layer'] for p in text_pages)
+
+    images = None
+    if needs_ocr:
+        images = convert_from_path(filepath, dpi=300)
+
+    if text_pages is None:
+        # pdfplumber unavailable or failed — full OCR fallback
+        results = []
+        for page_num, page_image in enumerate(images, start=1):
+            raw_text, fields = ocr_image(page_image)
+            results.append({
+                'page': page_num,
+                'raw_text': raw_text,
+                'fields': fields,
+                'engine': 'tesseract',
+            })
+        return results
+
+    # Per-page: text layer where available, OCR otherwise
+    results = []
+    for tp in text_pages:
+        if tp['has_text_layer']:
+            results.append({
+                'page': tp['page'],
+                'raw_text': tp['raw_text'],
+                'fields': text_layer_to_fields(tp['raw_text']),
+                'engine': 'pdfplumber',
+            })
+        else:
+            page_image = images[tp['page'] - 1]
+            raw_text, fields = ocr_image(page_image)
+            results.append({
+                'page': tp['page'],
+                'raw_text': raw_text,
+                'fields': fields,
+                'engine': 'tesseract',
+            })
     return results
 
 
@@ -312,13 +397,35 @@ def main():
             if all_text.strip() and not spec_type:
                 vendor_extracted = extract_for_vendor(args.vendor, all_text)
 
+            # Determine file-level engine from per-page engine info (PDFs
+            # may mix pdfplumber and tesseract pages; non-PDFs leave it empty).
+            page_engines = {p.get('engine') for p in pages if p.get('engine')}
+            if page_engines == {'pdfplumber'}:
+                file_engine = 'pdfplumber'
+                file_engine_version = (
+                    pdfplumber.__version__ if pdfplumber else 'unknown'
+                )
+            elif page_engines == {'tesseract'}:
+                file_engine = 'tesseract'
+                file_engine_version = tesseract_version
+            elif page_engines:
+                file_engine = 'mixed'
+                file_engine_version = (
+                    f'pdfplumber={pdfplumber.__version__ if pdfplumber else "?"};'
+                    f'tesseract={tesseract_version}'
+                )
+            else:
+                # No engine info on pages → non-PDF source (HTML, Excel, etc.)
+                file_engine = 'tesseract'
+                file_engine_version = tesseract_version
+
             output = {
                 'vendor': args.vendor,
                 'source_file': filepath.name,
                 'file_type': filepath.suffix.lstrip('.'),
                 'file_size_bytes': filepath.stat().st_size,
-                'ocr_engine': 'tesseract',
-                'ocr_version': tesseract_version,
+                'ocr_engine': file_engine,
+                'ocr_version': file_engine_version,
                 'pages': pages
             }
 
