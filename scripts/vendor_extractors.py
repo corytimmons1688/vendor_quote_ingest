@@ -312,12 +312,26 @@ def extract_tedpack(text):
 def extract_ross(text):
     """Extract specs and pricing from Ross OCR'd PDF text."""
     text = _rejoin_split_numbers(text)
+    # Issue #1: OCR sometimes splits a digit pair with a stray space inside a
+    # stock-component spec, e.g. "10#HB-PE" → "1 0#HB-PE". Stitch those back
+    # together before any spec parsing so substrate normalization is stable.
+    text = re.sub(r'(?<=\d) (?=\d#)', '', text)
     result = {}
 
     # --- Estimate number ---
     est_match = re.search(r'Estimate\s*No\.?\s*(\d+)', text, re.IGNORECASE)
     if est_match:
         result['estimate_number'] = est_match.group(1)
+
+    # --- Issue #5: reject internal Estimate Details / Estimate Margins reports ---
+    # These are Ross internal documents (HP press specs, margin analysis), not
+    # customer-facing quotes. Flag them so they don't pollute training data.
+    is_detail   = bool(re.search(r'\bEstimate\s+Details\b', text, re.IGNORECASE))
+    is_margins  = bool(re.search(r'\bEstimate\s+Margins\b', text, re.IGNORECASE))
+    if is_detail or is_margins:
+        result['status'] = 'flagged'
+        kind = 'Estimate Details' if is_detail else 'Estimate Margins'
+        result['error_message'] = f'{kind} internal report — not a customer quote'
 
     # --- Quote date ---
     # Format: "Date Fri, Apr 4, 2025" or "Date: Thu, Mar 20, 2025" or "Date Thu, Nov 14, 2024"
@@ -424,29 +438,41 @@ def extract_ross(text):
     #   "25,000 $0.52628 $13,157.00 $13,917.00"
     pricing = []
 
-    # Try Format 2 first (most common in recent quotes)
-    # Look for "Quantity Each Total Grand Total" header, then parse rows
-    fmt2_header = re.search(r'Quantity\s+Each\s+Total\s+Grand\s+Total', text, re.IGNORECASE)
+    # Try Format 2 first (most common in recent quotes).
+    # Two header variants exist:
+    #   (a) "Quantity Each Total Grand Total"   — price column is per-each
+    #   (b) "Quantity Per M Total Grand Total"  — price column is per-thousand
+    # Both share the same row layout "<qty> <price> <total> <grand_total>".
+    fmt2_header = re.search(
+        r'Quantity\s+(Each|Per\s*M)\s+Total\s+Grand\s+Total',
+        text, re.IGNORECASE,
+    )
     if fmt2_header:
-        # Get lines after the header
+        per_m_header = bool(re.match(r'per\s*m', fmt2_header.group(1), re.I))
         after_header = text[fmt2_header.end():]
-        # Match rows: "10,000 $0.65240 $6,524.00 $7,284.00"
         row_pattern = re.compile(
             r'^\s*([\d,]+)\s+\$?([\d.]+)\s+\$?([\d,.]+)\s+\$?([\d,.]+)',
             re.MULTILINE
         )
         for m in row_pattern.finditer(after_header):
-            # Stop if we hit non-data (e.g. "Non-Recurring", "Thank You")
-            if re.match(r'\s*[A-Z][a-z]', after_header[m.start():m.start()+20]):
-                # Check if it's actually a data line or text
-                pass
-            pricing.append({
-                'quantity': m.group(1).replace(',', ''),
-                'price_each': m.group(2),
+            qty = m.group(1).replace(',', '')
+            price = m.group(2)
+            entry = {
+                'quantity': qty,
                 'total': m.group(3),
                 'grand_total': m.group(4),
-            })
-            # Stop after a reasonable number or when format breaks
+            }
+            if per_m_header:
+                # Convert per-thousand → per-each so downstream consumers
+                # (which expect price_each) work uniformly.
+                entry['price_per_m_imps'] = price
+                try:
+                    entry['price_each'] = f'{float(price) / 1000:.5f}'
+                except ValueError:
+                    entry['price_each'] = price
+            else:
+                entry['price_each'] = price
+            pricing.append(entry)
             if len(pricing) > 10:
                 break
 
@@ -501,6 +527,28 @@ def extract_ross(text):
     lead_match = re.search(r'(?:lead|production)\s+time[:\s]*(.+?)(?:\n|$)', text, re.IGNORECASE)
     if lead_match:
         result['lead_time'] = lead_match.group(1).strip()
+
+    # --- Issue #3: flag roll-label products as not-pouch ---
+    # Ross runs a label printing line whose quotes sometimes land in the
+    # pouch ingest pipeline. Their stock numbers identify the product class:
+    #   Stock# 4xxx — face stocks (wine labels, etc.)
+    #   Stock# 3301 — matte laminate used on labels (NOT the 3905 pouch lam)
+    #   Stock# 1xxx — adhesive-only line items
+    # Pouch quotes use Stock# 5xxx (substrate) + 3905 (laminate).
+    if 'status' not in result:
+        has_label_face = bool(re.search(r'Stock\s*#?\s*4\d{3}\b', text))
+        has_label_lam  = bool(re.search(r'Stock\s*#?\s*3301\b', text))
+        has_adh_only   = bool(re.search(r'Stock\s*#?\s*1\d{3}\b', text))
+        has_pouch_sub  = bool(re.search(r'Stock\s*#?\s*5\d{3}\b', text))
+        # Treat as label if it shows label-only stock signatures and lacks
+        # pouch substrate. has_adh_only alone is ambiguous so we require it
+        # paired with a label face/lam OR absence of pouch substrate.
+        if (has_label_face or has_label_lam) and not has_pouch_sub:
+            result['status'] = 'flagged'
+            result['error_message'] = 'Roll-label product (Stock# 4xxx/3301) — not a pouch quote'
+        elif has_adh_only and not has_pouch_sub and not result.get('returned_spec_bag'):
+            result['status'] = 'flagged'
+            result['error_message'] = 'Adhesive-only line item — not a pouch quote'
 
     return result
 
