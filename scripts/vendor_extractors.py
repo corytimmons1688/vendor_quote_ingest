@@ -515,6 +515,160 @@ def extract_ross(text):
 # Web Width | Repeat | Terms | FOB | Art & Plates
 # Quote# at top
 
+
+def _parse_qty_with_suffix(s):
+    """'25K' → 25000, '1MIL' → 1000000, '550000' → 550000.
+    Returns int or None on failure."""
+    s = s.strip().upper().replace(',', '')
+    m = re.match(r'^([\d.]+)\s*(K|M|MIL|MM)?$', s)
+    if not m:
+        return None
+    n = float(m.group(1))
+    suf = m.group(2) or ''
+    if suf == 'K':
+        n *= 1_000
+    elif suf in ('M', 'MIL', 'MM'):
+        n *= 1_000_000
+    return int(n)
+
+
+def _parse_dazpak_xlsx_quote_request(text):
+    """Multi-bag xlsx in 'Quote Request#' format (Royal Blue, etc.).
+    Each bag is delimited by 'Quote Request# NNN [-N]' followed by specs and a
+    'Quantity IMP / Price / IMP / Price / M IMP' table.
+    Returns flat list of tier dicts (each with 'bag_name'), or [] if not this format."""
+    if 'Quote Request#' not in text:
+        return []
+    out = []
+    blocks = re.split(r'(?=Quote\s+Request#\s+\S)', text)
+    for blk in blocks:
+        m = re.search(r'Quote\s+Request#\s+(\S+(?:\s*-\s*\d+)?)', blk)
+        if not m:
+            continue
+        bag_name = m.group(1).strip()
+        for ln in blk.split('\n'):
+            tm = re.match(
+                r'^\s*(\d+\s*(?:K|MIL|M))\s*\t?\s*([\d.]+)\s*\t?\s*([\d.]+)\s*$',
+                ln, re.I,
+            )
+            if not tm:
+                continue
+            qty = _parse_qty_with_suffix(tm.group(1))
+            if not qty:
+                continue
+            out.append({
+                'quantity': str(qty),
+                'price_each': tm.group(2),
+                'price_per_m_imps': tm.group(3),
+                'price_per_msi': None,
+                'bag_name': bag_name,
+            })
+    return out
+
+
+def _parse_dazpak_xlsx_glorious(text):
+    """Multi-bag xlsx in Glorious format. Each bag has a header line
+    '<bag name> - Glorious\\t<qty1>\\t<qty2>...' followed within ~25 lines by
+    'FOB City of Industry, CA\\t<price1>\\t<price2>...'.
+    Returns flat list of tier dicts, or [] if not this format."""
+    if 'Glorious' not in text or 'FOB City of Industry' not in text:
+        return []
+    out = []
+    lines = text.split('\n')
+    i = 0
+    while i < len(lines):
+        hm = re.match(r'^(.+?)\s*-\s*Glorious\s*\t([\d\t,]+)\s*$', lines[i])
+        if hm:
+            bag_name = hm.group(1).strip()
+            qtys = [_parse_qty_with_suffix(q) for q in hm.group(2).split('\t') if q.strip()]
+            prices = None
+            for j in range(i + 1, min(i + 30, len(lines))):
+                pm = re.search(
+                    r'FOB\s+City\s+of\s+Industry,?\s*CA\s*\t([\d.\t]+)',
+                    lines[j],
+                )
+                if pm:
+                    prices = [p for p in pm.group(1).split('\t') if p.strip()]
+                    break
+            if prices and len(prices) == len(qtys):
+                for q, p in zip(qtys, prices):
+                    if q is not None:
+                        out.append({
+                            'quantity': str(q),
+                            'price_each': p,
+                            'price_per_m_imps': None,
+                            'price_per_msi': None,
+                            'bag_name': bag_name,
+                        })
+        i += 1
+    return out
+
+
+def _parse_dazpak_xlsx_cure(text):
+    """Multi-bag xlsx in Cure-Custom-Designs format. The file lays bags out as
+    side-by-side columns; pricing rows are tab-separated alternating
+    qty/price for each bag (e.g. '5000\\t943.64\\t5000\\t1058.67\\t...').
+    The bag names come from the first 'Product Name\\t...' header row.
+    Returns flat list of tier dicts, or [] if not this format."""
+    lines = text.split('\n')
+    bag_names = []
+    for ln in lines:
+        if ln.strip().startswith('Product Name'):
+            cols = [c.strip() for c in ln.split('\t')]
+            for i in range(1, len(cols), 2):
+                if cols[i]:
+                    bag_names.append(cols[i])
+            break
+    if len(bag_names) < 2:
+        return []
+
+    seen_per_bag = {b: set() for b in bag_names}
+    out = []
+    for ln in lines:
+        cells = [c.strip() for c in ln.split('\t')]
+        if len(cells) < 2 or len(cells) % 2:
+            continue
+        try:
+            pairs = [
+                (int(cells[i].replace(',', '')), float(cells[i + 1]))
+                for i in range(0, len(cells), 2)
+            ]
+        except (ValueError, IndexError):
+            continue
+        if not all(q >= 1000 for q, _ in pairs):
+            continue
+        if all(p == pairs[0][1] for _, p in pairs):
+            continue  # all-equal rows are headers, not tier data
+        if len(pairs) != len(bag_names):
+            continue
+        for (q, p), bag in zip(pairs, bag_names):
+            if q in seen_per_bag[bag]:
+                continue  # dedupe — Cure xlsx OCR sometimes duplicates rows
+            seen_per_bag[bag].add(q)
+            out.append({
+                'quantity': str(q),
+                'price_each': str(p),
+                'price_per_m_imps': None,
+                'price_per_msi': None,
+                'bag_name': bag,
+            })
+    return out
+
+
+def _parse_dazpak_multibag_xlsx(text):
+    """Try each known multi-bag xlsx parser. Return the first non-empty result,
+    or [] if none match."""
+    for fn in (
+        _parse_dazpak_xlsx_quote_request,
+        _parse_dazpak_xlsx_glorious,
+        _parse_dazpak_xlsx_cure,
+    ):
+        tiers = fn(text)
+        if tiers:
+            return tiers
+    return []
+
+
 def extract_dazpak(text):
     """Extract specs and pricing from Dazpak OCR'd PDF text."""
     text = _rejoin_split_numbers(text)
@@ -646,16 +800,25 @@ def extract_dazpak(text):
         result['material_structure'] = ' / '.join(materials)
 
     # --- Pricing table ---
-    # Extract only the pricing section between the header and "Web Width" to avoid
-    # matching adder columns or other numeric data outside the pricing table.
-    pricing = []
-    pricing_section = ''
-    header_match = re.search(r'(?:UOM|YOM|Quantities).*(?:Price|Imp)', text, re.IGNORECASE)
-    footer_match = re.search(r'Web\s*Width', text, re.IGNORECASE)
-    if header_match:
-        start = header_match.end()
-        end = footer_match.start() if footer_match else len(text)
-        pricing_section = text[start:end]
+    # Multi-bag xlsx files (Royal Blue / Glorious / Cure-Custom-Designs) do
+    # NOT use the standard "UOM | Quantities | Prices" PDF table layout.
+    # Each bag has its own block with its own pricing tiers. Detect those
+    # formats up-front and emit the flattened tier list.
+    multibag_tiers = _parse_dazpak_multibag_xlsx(text)
+    if multibag_tiers:
+        result['pricing_json'] = json.dumps(multibag_tiers)
+        # Skip the standard pricing-table extraction below
+        pricing_section = ''
+        pricing = multibag_tiers
+    else:
+        pricing = []
+        pricing_section = ''
+        header_match = re.search(r'(?:UOM|YOM|Quantities).*(?:Price|Imp)', text, re.IGNORECASE)
+        footer_match = re.search(r'Web\s*Width', text, re.IGNORECASE)
+        if header_match:
+            start = header_match.end()
+            end = footer_match.start() if footer_match else len(text)
+            pricing_section = text[start:end]
 
     # Match lines like: 50,000 $245.2500 $3.2782 $0.2453
     # or: Impressions 50,000 ...

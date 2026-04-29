@@ -97,7 +97,13 @@ def main():
     )
 
     with conn.cursor() as cur:
-        cur.execute(select_sql, params)
+        # When --where-raw is used, the clause may contain literal `%` (LIKE
+        # patterns) which psycopg2 would otherwise treat as a parameter
+        # placeholder. Skip param substitution entirely in that case.
+        if params:
+            cur.execute(select_sql, params)
+        else:
+            cur.execute(select_sql)
         rows = cur.fetchall()
 
     if not rows:
